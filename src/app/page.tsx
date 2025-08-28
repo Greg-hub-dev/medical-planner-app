@@ -1042,7 +1042,7 @@ const MedicalPlanningAgent = () => {
                 ))}
               </div>
               <div className="text-gray-600">
-                💡 Contraintes : "J&apos;ai une contrainte le [date] de [heure] à [heure]"
+                💡 Contraintes : J ai une contrainte le [date] de [heure] à [heure]
               </div>
               {constraints.length > 0 && (
                 <div className="mt-1 text-orange-600">
