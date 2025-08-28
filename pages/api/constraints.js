@@ -1,4 +1,5 @@
 import { connectDB, Constraint } from '../../lib/database';
+import { reorganizeAllSessions } from '../../lib/planning';
 
 export default async function handler(req, res) {
   await connectDB();
@@ -18,7 +19,8 @@ export default async function handler(req, res) {
       try {
         const constraints = await Constraint.find().sort({ date: 1 });
         res.status(200).json(constraints);
-      } catch (error) {
+      } catch (err) {
+        console.error('Erreur GET constraints:', err);
         res.status(500).json({ error: 'Erreur serveur' });
       }
       break;
@@ -62,7 +64,8 @@ export default async function handler(req, res) {
           affectedSessions: affectedSessions.length,
           message: `Contrainte ajoutée. ${affectedSessions.length} session(s) reportée(s).`
         });
-      } catch (error) {
+      } catch (err) {
+        console.error('Erreur création contrainte:', err);
         res.status(500).json({ error: 'Erreur création contrainte' });
       }
       break;

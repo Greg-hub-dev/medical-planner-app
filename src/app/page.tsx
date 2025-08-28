@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect } from 'react';
-import { Calendar, Clock, Brain, TrendingUp, Plus, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
+import React, { useState, useEffect, useCallback } from 'react';
+import { Calendar, Clock, Brain, Plus, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const MedicalPlanningAgent = () => {
   const [courses, setCourses] = useState([]);
@@ -77,7 +77,7 @@ const MedicalPlanningAgent = () => {
 
   const createCourseSessions = (courseName, startDate = new Date()) => {
     const sessions = [];
-    let adjustedStartDate = new Date(startDate);
+    const adjustedStartDate = new Date(startDate);
 
     if (adjustedStartDate.getDay() === 0) {
       adjustedStartDate.setDate(adjustedStartDate.getDate() + 1);
@@ -150,7 +150,7 @@ const MedicalPlanningAgent = () => {
     today.setHours(0, 0, 0, 0);
 
     allPendingSessions.forEach(session => {
-      let targetDate = new Date(Math.max(session.originalDate.getTime(), today.getTime()));
+      const targetDate = new Date(Math.max(session.originalDate.getTime(), today.getTime()));
 
       while (true) {
         if (targetDate.getDay() === 0) {
@@ -246,7 +246,7 @@ const MedicalPlanningAgent = () => {
     return weeklyPlan;
   };
 
-  const getTodaySessions = () => {
+  const getTodaySessions = useCallback(() => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -268,7 +268,7 @@ const MedicalPlanningAgent = () => {
     });
 
     return todaySessions;
-  };
+  }, [courses]);
 
   const processAICommand = (message) => {
     const lowerMsg = message.toLowerCase();
@@ -354,7 +354,7 @@ const MedicalPlanningAgent = () => {
           });
         });
 
-        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 10h/jour)\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
+        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 10h/jour)\n\n💡 Consultez votre planning mis à jour avec &quot;Planning de la semaine&quot;`;
       }
 
       return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n\n💡 Ajoutez des cours et ils seront automatiquement programmés en évitant cette période !`;
@@ -442,7 +442,7 @@ const MedicalPlanningAgent = () => {
         totalCourses: prev.totalCourses + 1
       }));
 
-      let response = `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+3, J+7, J+15, J+30, J+90 - Révisions espacées`;
+      let response = `✅ Cours &quot;${courseName}&quot; ajouté avec ${hours}h/jour !\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+3, J+7, J+15, J+30, J+90 - Révisions espacées`;
 
       if (rescheduledCount > 0) {
         response += `\n\n🔄 ${rescheduledCount} session(s) reportée(s) automatiquement`;
@@ -460,7 +460,7 @@ const MedicalPlanningAgent = () => {
 
     if (lowerMsg.includes('contraintes') || (lowerMsg.includes('liste') && lowerMsg.includes('rdv'))) {
       if (constraints.length === 0) {
-        return `📋 Aucune contrainte enregistrée.\n\n💡 Ajoutez une contrainte :\n• "J'ai une contrainte le 15/03 de 9h à 12h"\n• "Rendez-vous médical le 20 septembre toute la journée"`;
+        return `📋 Aucune contrainte enregistrée.\n\n💡 Ajoutez une contrainte :\n• &quot;J&apos;ai une contrainte le 15/03 de 9h à 12h&quot;\n• &quot;Rendez-vous médical le 20 septembre toute la journée&quot;`;
       }
 
       let response = `📋 Vos contraintes enregistrées :\n\n`;
@@ -531,7 +531,7 @@ const MedicalPlanningAgent = () => {
       const todaySessions = getTodaySessions();
       const isSunday = new Date().getDay() === 0;
 
-      let response = `📋 Planning d'aujourd'hui (${new Date().toLocaleDateString('fr-FR')}):\n\n`;
+      let response = `📋 Planning d&apos;aujourd&apos;hui (${new Date().toLocaleDateString('fr-FR')}):\n\n`;
 
       const todayConstraints = constraints.filter(constraint => {
         const constraintDate = new Date(constraint.date);
@@ -555,7 +555,7 @@ const MedicalPlanningAgent = () => {
       if (isSunday) {
         response += `🛌 Dimanche = Jour de repos automatique !`;
       } else if (todaySessions.length === 0) {
-        response += `✨ Aucune session programmée aujourd'hui !`;
+        response += `✨ Aucune session programmée aujourd&apos;hui !`;
       } else {
         const totalHours = todaySessions.reduce((sum, s) => sum + s.hours, 0);
         response += `📊 ${todaySessions.length} session(s) • ${totalHours}h total\n\n📚 Sessions :\n`;
@@ -570,10 +570,10 @@ const MedicalPlanningAgent = () => {
     }
 
     if (lowerMsg.includes('aide')) {
-      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"`;
+      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• &quot;Ajouter [nom] avec [X] heures par jour&quot;\n• &quot;Ajouter [nom] avec [X]h démarrage le [date]&quot;\n\n⚠️ CONTRAINTES :\n• &quot;J&apos;ai une contrainte le [date] de [heure] à [heure]&quot;\n• &quot;Rendez-vous médical le [date] toute la journée&quot;\n• &quot;Mes contraintes&quot;\n\n📋 PLANNING :\n• &quot;Mon planning du jour&quot;\n• &quot;Planning de la semaine&quot;`;
     }
 
-    return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Mon planning du jour"\n• "Aide" pour plus de commandes`;
+    return `🤔 Je comprends que vous voulez &quot;${message}&quot;.\n\n💡 Essayez:\n• &quot;Ajouter [cours] avec [heures] heures par jour&quot;\n• &quot;J&apos;ai une contrainte le [date] de [heure] à [heure]&quot;\n• &quot;Mon planning du jour&quot;\n• &quot;Aide&quot; pour plus de commandes`;
   };
 
   const handleSendMessage = () => {
@@ -596,7 +596,7 @@ const MedicalPlanningAgent = () => {
       todayHours: todayHours,
       completionRate: totalSessions > 0 ? Math.round((totalCompletedSessions / totalSessions) * 100) : 0
     });
-  }, [courses]);
+  }, [courses, getTodaySessions]);
 
   return (
     <div className="max-w-7xl mx-auto p-6 bg-gray-50 min-h-screen">
@@ -622,7 +622,7 @@ const MedicalPlanningAgent = () => {
             <div className="bg-white p-4 rounded-lg shadow-sm border">
               <div className="flex items-center gap-2 mb-2">
                 <Clock className="w-5 h-5 text-green-600" />
-                <span className="text-sm font-medium">Aujourd'hui</span>
+                <span className="text-sm font-medium">Aujourd&apos;hui</span>
               </div>
               <div className="text-2xl font-bold text-gray-800">{stats.todayHours}h</div>
             </div>
@@ -817,7 +817,7 @@ const MedicalPlanningAgent = () => {
                 ))}
               </div>
               <div className="text-gray-600">
-                💡 Contraintes : "J'ai une contrainte le [date] de [heure] à [heure]"
+                💡 Contraintes : &quot;J&apos;ai une contrainte le [date] de [heure] à [heure]&quot;
               </div>
               {constraints.length > 0 && (
                 <div className="mt-1 text-orange-600">

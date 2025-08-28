@@ -1,5 +1,9 @@
+import { connectDB, Course, Constraint } from '../../lib/database';
+
 export default async function handler(req, res) {
   try {
+    await connectDB();
+
     const [courses, constraints] = await Promise.all([
       Course.find(),
       Constraint.find()
@@ -19,7 +23,8 @@ export default async function handler(req, res) {
     };
 
     res.status(200).json(exportData);
-  } catch (error) {
+  } catch (err) {
+    console.error('Erreur export:', err);
     res.status(500).json({ error: 'Erreur export' });
   }
 }
