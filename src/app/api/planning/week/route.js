@@ -1,5 +1,5 @@
-import { connectDB } from '../../../../lib/database';
-import { generateWeeklyPlan } from '../../../../lib/planning';
+import { connectDB } from '../../../../../lib/database';
+import { generateWeeklyPlan } from '../../../../../planning';
 
 export default async function handler(req, res) {
   const { offset = 0 } = req.query;

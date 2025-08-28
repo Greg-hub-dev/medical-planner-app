@@ -1,4 +1,4 @@
-import { connectDB, Course, Constraint } from '../../lib/database';
+import { connectDB, Course, Constraint } from '../../../../lib/database';
 
 export default async function handler(req, res) {
   try {
