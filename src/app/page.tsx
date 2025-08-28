@@ -4,17 +4,21 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Calendar, Clock, Brain, Plus, CheckCircle2, ChevronLeft, ChevronRight } from 'lucide-react';
 
 const MedicalPlanningAgent = () => {
-  const [courses, setCourses] = useState([]);
-  const [constraints, setConstraints] = useState([]);
-  const [currentWeek, setCurrentWeek] = useState(0);
-  const [chatMessages, setChatMessages] = useState([
+  const [courses, setCourses] = useState<any[]>([]);
+  const [constraints, setConstraints] = useState<any[]>([]);
+  const [currentWeek, setCurrentWeek] = useState<number>(0);
+  const [chatMessages, setChatMessages] = useState<{ type: string; content: string }[]>([
     {
       type: 'ai',
       content: '🎓 Bonjour ! Je suis votre agent de planning médical.\n\n📅 Planning: Lundi-Samedi • Dimanche = Repos automatique\n\n💡 Formats disponibles:\n• "Ajouter Anatomie avec 2 heures par jour"\n• "Ajouter Physiologie avec 1.5h démarrage le 15/03"\n• "J\'ai une contrainte le 20/03 de 9h à 12h"\n• "Rendez-vous médical le 15 septembre toute la journée"'
     }
   ]);
-  const [inputMessage, setInputMessage] = useState('');
-  const [stats, setStats] = useState({
+  const [inputMessage, setInputMessage] = useState<string>('');
+  const [stats, setStats] = useState<{
+    totalCourses: number;
+    todayHours: number;
+    completionRate: number;
+  }>({
     totalCourses: 0,
     todayHours: 0,
     completionRate: 0
@@ -37,7 +41,7 @@ const MedicalPlanningAgent = () => {
     { key: 'J+90', days: 90, label: 'J+90', color: 'bg-pink-100 text-pink-700' }
   ];
 
-  const createConstraint = (date, startHour, endHour, description) => {
+  const createConstraint = (date: string | Date, startHour: number, endHour: number, description: string) => {
     return {
       id: Date.now(),
       date: new Date(date),
@@ -48,7 +52,7 @@ const MedicalPlanningAgent = () => {
     };
   };
 
-  const hasConflict = (sessionDate, sessionHours) => {
+  const hasConflict = (sessionDate: Date, sessionHours: number) => {
     const sessionStart = new Date(sessionDate);
     sessionStart.setHours(workingHours.start, 0, 0, 0);
 
@@ -75,7 +79,7 @@ const MedicalPlanningAgent = () => {
     });
   };
 
-  const createCourseSessions = (courseName, startDate = new Date()) => {
+  const createCourseSessions = (courseName: string, startDate: Date = new Date()) => {
     const sessions = [];
     const adjustedStartDate = new Date(startDate);
 
@@ -107,7 +111,7 @@ const MedicalPlanningAgent = () => {
     return sessions;
   };
 
-  const createNewCourse = (name, hoursPerDay, startDate = new Date()) => {
+  const createNewCourse = (name: string, hoursPerDay: number, startDate: Date = new Date()) => {
     const sessions = createCourseSessions(name, startDate);
 
     return {
@@ -121,12 +125,12 @@ const MedicalPlanningAgent = () => {
     };
   };
 
-  const rebalanceSessions = (coursesToBalance) => {
+  const rebalanceSessions = (coursesToBalance: any[]) => {
     const updatedCourses = [...coursesToBalance];
 
-    const allPendingSessions = [];
+    const allPendingSessions: any[] = [];
     updatedCourses.forEach(course => {
-      course.sessions.forEach(session => {
+      course.sessions.forEach((session: any) => {
         if (!session.completed) {
           allPendingSessions.push({
             ...session,
@@ -145,7 +149,7 @@ const MedicalPlanningAgent = () => {
       return jIntervals.findIndex(j => j.key === a.interval) - jIntervals.findIndex(j => j.key === b.interval);
     });
 
-    const dailySchedule = {};
+    const dailySchedule: { [key: string]: number } = {};
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
@@ -170,7 +174,7 @@ const MedicalPlanningAgent = () => {
           dailySchedule[dateKey] = currentDayHours + session.hoursNeeded;
 
           const course = updatedCourses.find(c => c.id === session.courseId);
-          const originalSession = course.sessions.find(s => s.id === session.id);
+          const originalSession = course.sessions.find((s: any) => s.id === session.id);
           originalSession.date = new Date(targetDate);
           originalSession.rescheduled = targetDate.toDateString() !== session.originalDate.toDateString();
 
@@ -184,7 +188,7 @@ const MedicalPlanningAgent = () => {
     return updatedCourses;
   };
 
-  const getWeekDates = (weekOffset = 0) => {
+  const getWeekDates = (weekOffset: number = 0) => {
     const today = new Date();
     const currentDay = today.getDay();
     const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay;
@@ -201,20 +205,20 @@ const MedicalPlanningAgent = () => {
     return weekDates;
   };
 
-  const getWeeklyPlan = (weekOffset = 0) => {
+  const getWeeklyPlan = (weekOffset: number = 0) => {
     const weekDates = getWeekDates(weekOffset);
-    const weeklyPlan = {};
+    const weeklyPlan: { [key: string]: any } = {};
 
     weekDates.slice(0, 6).forEach((date, index) => {
       const dayName = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi'][index];
       const dayStart = new Date(date);
       dayStart.setHours(0, 0, 0, 0);
 
-      const daySessions = [];
+      const daySessions: any[] = [];
       let totalHours = 0;
 
-      courses.forEach(course => {
-        course.sessions.forEach(session => {
+      courses.forEach((course: any) => {
+        course.sessions.forEach((session: any) => {
           const sessionDate = new Date(session.date);
           sessionDate.setHours(0, 0, 0, 0);
 
@@ -250,10 +254,10 @@ const MedicalPlanningAgent = () => {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const todaySessions = [];
+    const todaySessions: any[] = [];
 
-    courses.forEach(course => {
-      course.sessions.forEach(session => {
+    courses.forEach((course: any) => {
+      course.sessions.forEach((session: any) => {
         const sessionDate = new Date(session.date);
         sessionDate.setHours(0, 0, 0, 0);
 
@@ -270,7 +274,7 @@ const MedicalPlanningAgent = () => {
     return todaySessions;
   }, [courses]);
 
-  const processAICommand = (message) => {
+  const processAICommand = (message: string) => {
     const lowerMsg = message.toLowerCase();
 
     if (lowerMsg.includes('contrainte') || lowerMsg.includes('empêche') || lowerMsg.includes('rendez-vous') || lowerMsg.includes('rdv') || lowerMsg.includes('occupation')) {
@@ -283,7 +287,7 @@ const MedicalPlanningAgent = () => {
       for (const pattern of datePatterns) {
         const match = message.match(pattern);
         if (match) {
-          if (match[2] && !isNaN(match[2])) {
+          if (match[2] && !isNaN(match[2] as any)) {
             const day = parseInt(match[1]);
             const month = parseInt(match[2]) - 1;
             const year = match[3] ? parseInt(match[3]) : new Date().getFullYear();
@@ -348,8 +352,8 @@ const MedicalPlanningAgent = () => {
         setCourses(rebalanced);
 
         let affectedSessions = 0;
-        rebalanced.forEach(course => {
-          course.sessions.forEach(session => {
+        rebalanced.forEach((course: any) => {
+          course.sessions.forEach((session: any) => {
             if (session.rescheduled) affectedSessions++;
           });
         });
@@ -374,7 +378,7 @@ const MedicalPlanningAgent = () => {
       for (const pattern of datePatterns) {
         const match = message.match(pattern);
         if (match) {
-          if (match[2] && !isNaN(match[2])) {
+          if (match[2] && !isNaN(match[2] as any)) {
             const day = parseInt(match[1]);
             const month = parseInt(match[2]) - 1;
             const year = match[3] ? parseInt(match[3]) : new Date().getFullYear();
@@ -424,9 +428,9 @@ const MedicalPlanningAgent = () => {
       let rescheduledCount = 0;
       let constraintAffected = false;
 
-      rebalanced.forEach(course => {
+      rebalanced.forEach((course: any) => {
         if (course.name === courseName) {
-          course.sessions.forEach(session => {
+          course.sessions.forEach((session: any) => {
             if (session.rescheduled) {
               rescheduledCount++;
               if (hasConflict(session.originalDate, course.hoursPerDay)) {
@@ -437,7 +441,7 @@ const MedicalPlanningAgent = () => {
         }
       });
 
-      setStats(prev => ({
+      setStats((prev: any) => ({
         ...prev,
         totalCourses: prev.totalCourses + 1
       }));
@@ -465,7 +469,7 @@ const MedicalPlanningAgent = () => {
 
       let response = `📋 Vos contraintes enregistrées :\n\n`;
 
-      constraints.forEach((constraint, index) => {
+      constraints.forEach((constraint: any, index: number) => {
         const timeRange = constraint.startHour === 0 && constraint.endHour === 24 ?
           'Toute la journée' :
           `${constraint.startHour}h à ${constraint.endHour}h`;
@@ -486,10 +490,10 @@ const MedicalPlanningAgent = () => {
       const weeklyPlan = getWeeklyPlan(currentWeek);
       let response = `📅 Planning semaine ${currentWeek === 0 ? '(actuelle)' : currentWeek > 0 ? `(+${currentWeek})` : `(${currentWeek})`}:\n\n`;
 
-      Object.entries(weeklyPlan).forEach(([day, data]) => {
+      Object.entries(weeklyPlan).forEach(([day, data]: [string, any]) => {
         const isToday = data.date.toDateString() === new Date().toDateString();
 
-        const dayConstraints = constraints.filter(constraint => {
+        const dayConstraints = constraints.filter((constraint: any) => {
           const constraintDate = new Date(constraint.date);
           constraintDate.setHours(0, 0, 0, 0);
           const dayDate = new Date(data.date);
@@ -499,7 +503,7 @@ const MedicalPlanningAgent = () => {
 
         response += `${isToday ? '👉 ' : ''}${day} ${data.date.getDate()}/${data.date.getMonth() + 1}:\n`;
 
-        dayConstraints.forEach(constraint => {
+        dayConstraints.forEach((constraint: any) => {
           const timeRange = constraint.startHour === 0 && constraint.endHour === 24 ?
             'Toute la journée' :
             `${constraint.startHour}h-${constraint.endHour}h`;
@@ -509,7 +513,7 @@ const MedicalPlanningAgent = () => {
         if (data.sessions.length === 0) {
           response += `   Repos - aucune session\n`;
         } else {
-          data.sessions.forEach(session => {
+          data.sessions.forEach((session: any) => {
             const statusIcon = session.completed ? (session.success ? '✅' : '❌') : '⏳';
             const rescheduledIcon = session.rescheduled ? ' 🔄' : '';
             response += `   ${statusIcon} ${session.course} (${session.intervalLabel}) - ${session.hours}h${rescheduledIcon}\n`;
@@ -533,7 +537,7 @@ const MedicalPlanningAgent = () => {
 
       let response = `📋 Planning d&apos;aujourd&apos;hui (${new Date().toLocaleDateString('fr-FR')}):\n\n`;
 
-      const todayConstraints = constraints.filter(constraint => {
+      const todayConstraints = constraints.filter((constraint: any) => {
         const constraintDate = new Date(constraint.date);
         constraintDate.setHours(0, 0, 0, 0);
         const today = new Date();
@@ -543,7 +547,7 @@ const MedicalPlanningAgent = () => {
 
       if (todayConstraints.length > 0) {
         response += `⚠️ Contraintes du jour :\n`;
-        todayConstraints.forEach(constraint => {
+        todayConstraints.forEach((constraint: any) => {
           const timeRange = constraint.startHour === 0 && constraint.endHour === 24 ?
             'Toute la journée' :
             `${constraint.startHour}h à ${constraint.endHour}h`;
@@ -557,10 +561,10 @@ const MedicalPlanningAgent = () => {
       } else if (todaySessions.length === 0) {
         response += `✨ Aucune session programmée aujourd&apos;hui !`;
       } else {
-        const totalHours = todaySessions.reduce((sum, s) => sum + s.hours, 0);
+        const totalHours = todaySessions.reduce((sum: number, s: any) => sum + s.hours, 0);
         response += `📊 ${todaySessions.length} session(s) • ${totalHours}h total\n\n📚 Sessions :\n`;
 
-        todaySessions.forEach(item => {
+        todaySessions.forEach((item: any) => {
           const rescheduledIcon = item.session.rescheduled ? ' 🔄' : '';
           response += `• ${item.course.name} (${item.session.intervalLabel}) - ${item.hours}h${rescheduledIcon}\n`;
         });
@@ -587,9 +591,9 @@ const MedicalPlanningAgent = () => {
   };
 
   useEffect(() => {
-    const todayHours = getTodaySessions().reduce((sum, s) => sum + s.hours, 0);
-    const totalCompletedSessions = courses.reduce((sum, course) => sum + course.sessions.filter(s => s.completed).length, 0);
-    const totalSessions = courses.reduce((sum, course) => sum + course.sessions.length, 0);
+    const todayHours = getTodaySessions().reduce((sum: number, s: any) => sum + s.hours, 0);
+    const totalCompletedSessions = courses.reduce((sum: number, course: any) => sum + course.sessions.filter((s: any) => s.completed).length, 0);
+    const totalSessions = courses.reduce((sum: number, course: any) => sum + course.sessions.length, 0);
 
     setStats({
       totalCourses: courses.length,
@@ -664,7 +668,7 @@ const MedicalPlanningAgent = () => {
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-7 divide-x divide-gray-200">
-              {Object.entries(getWeeklyPlan(currentWeek)).map(([dayName, dayData]) => {
+              {Object.entries(getWeeklyPlan(currentWeek)).map(([dayName, dayData]: [string, any]) => {
                 const isToday = dayData.date.toDateString() === new Date().toDateString();
                 const isOverloaded = dayData.totalHours > workingHours.availableHours;
 
@@ -684,7 +688,7 @@ const MedicalPlanningAgent = () => {
                       <p className="text-xs text-gray-400 italic">Repos</p>
                     ) : (
                       <div className="space-y-2">
-                        {dayData.sessions.map((session, idx) => (
+                        {dayData.sessions.map((session: any, idx: number) => (
                           <div key={idx} className={`text-xs p-2 rounded ${session.color}`}>
                             <div className="font-medium truncate">{session.course}</div>
                             <div className="flex justify-between items-center">
@@ -868,7 +872,7 @@ const MedicalPlanningAgent = () => {
           <div className="mt-4 p-4 bg-red-50 rounded-lg">
             <h4 className="font-medium text-red-800 mb-2">⚠️ Contraintes actives ({constraints.length}) :</h4>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {constraints.map(constraint => (
+              {constraints.map((constraint: any) => (
                 <div key={constraint.id} className="text-sm text-red-700">
                   <div className="font-medium">{constraint.description}</div>
                   <div className="text-xs">
@@ -890,8 +894,8 @@ const MedicalPlanningAgent = () => {
           <div className="mt-4 p-4 bg-blue-50 rounded-lg">
             <h4 className="font-medium text-blue-800 mb-2">📊 État actuel du planning :</h4>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-              {courses.map(course => {
-                const rescheduledCount = course.sessions.filter(s => s.rescheduled && !s.completed).length;
+              {courses.map((course: any) => {
+                const rescheduledCount = course.sessions.filter((s: any) => s.rescheduled && !s.completed).length;
                 return (
                   <div key={course.id} className="text-center">
                     <div className="font-medium text-blue-700">{course.name}</div>
@@ -904,7 +908,7 @@ const MedicalPlanningAgent = () => {
               })}
             </div>
             <div className="mt-2 text-sm text-blue-700">
-              <strong>Total :</strong> {courses.reduce((sum, course) => sum + course.hoursPerDay, 0)}h/jour
+              <strong>Total :</strong> {courses.reduce((sum: number, course: any) => sum + course.hoursPerDay, 0)}h/jour
               • <strong>Capacité :</strong> {workingHours.availableHours}h disponibles
               • <strong>Dimanche :</strong> Toujours libre 🛌
               {constraints.length > 0 && (
