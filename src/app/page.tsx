@@ -848,6 +848,160 @@ const MedicalPlanningAgent = () => {
             </div>
           </div>
 
+          {/* Section de gestion des cours */}
+          {courses.length > 0 && (
+            <div className="bg-white rounded-lg shadow-sm border mb-6">
+              <div className="p-4 border-b">
+                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  📚 Gestion des Cours
+                  <span className="text-sm font-normal text-gray-500">({courses.length} cours actifs)</span>
+                </h2>
+              </div>
+
+              <div className="p-4 space-y-4">
+                {courses.map(course => {
+                  const completedSessions = course.sessions.filter(s => s.completed).length;
+                  const rescheduledSessions = course.sessions.filter(s => s.rescheduled && !s.completed).length;
+
+                  return (
+                    <div key={course.id} className="border rounded-lg p-4 bg-gray-50">
+                      <div className="flex justify-between items-start mb-3">
+                        <div>
+                          <h3 className="font-medium text-gray-800">{course.name}</h3>
+                          <p className="text-sm text-gray-600">
+                            {course.hoursPerDay}h/jour • {completedSessions}/{course.totalSessions} sessions terminées
+                            {rescheduledSessions > 0 && (
+                              <span className="ml-2 text-orange-600">🔄 {rescheduledSessions} reportées</span>
+                            )}
+                          </p>
+                        </div>
+                        <button
+                          onClick={() => {
+                            const confirmDelete = window.confirm(`Supprimer le cours "${course.name}" et toutes ses sessions ?`);
+                            if (confirmDelete) {
+                              deleteCourse(course.id);
+                            }
+                          }}
+                          className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm font-medium transition-colors"
+                        >
+                          🗑️ Supprimer cours
+                        </button>
+                      </div>
+
+                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
+                        {course.sessions.map(session => {
+                          const isCompleted = session.completed;
+                          const statusIcon = isCompleted ? (session.success ? '✅' : '❌') : '⏳';
+
+                          return (
+                            <div key={session.id} className="relative group">
+                              <div className={`text-xs p-2 rounded ${session.color} ${isCompleted ? 'opacity-60' : ''}`}>
+                                <div className="flex justify-between items-center">
+                                  <span className="font-medium">{session.interval}</span>
+                                  <span>{statusIcon}</span>
+                                </div>
+                                <div className="text-xs opacity-75">
+                                  {session.date.toLocaleDateString('fr-FR')}
+                                </div>
+                                {session.rescheduled && (
+                                  <div className="text-xs text-orange-600">🔄</div>
+                                )}
+                              </div>
+
+                              {!isCompleted && (
+                                <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={() => {
+                                      const confirmDelete = window.confirm(`Supprimer la session ${session.interval} du cours "${course.name}" ?`);
+                                      if (confirmDelete) {
+                                        deleteSession(course.id, session.id);
+                                      }
+                                    }}
+                                    className="w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs flex items-center justify-center"
+                                    title="Supprimer cette session"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              )}
+
+                              {!isCompleted && (
+                                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <div className="flex gap-1 p-1">
+                                    <button
+                                      onClick={() => markSessionComplete(course.id, session.id, true)}
+                                      className="flex-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded px-1 py-0.5"
+                                      title="Marquer comme réussie"
+                                    >
+                                      ✓
+                                    </button>
+                                    <button
+                                      onClick={() => markSessionComplete(course.id, session.id, false)}
+                                      className="flex-1 bg-red-500 hover:bg-red-600 text-white text-xs rounded px-1 py-0.5"
+                                      title="Marquer comme échouée"
+                                    >
+                                      ✗
+                                    </button>
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      {/* Boutons d'action rapide pour le cours */}
+                      <div className="mt-3 flex gap-2 flex-wrap">
+                        <button
+                          onClick={() => {
+                            const incompleteSessions = course.sessions.filter(s => !s.completed);
+                            const confirmDelete = window.confirm(`Supprimer toutes les sessions incomplètes de "${course.name}" (${incompleteSessions.length} sessions) ?`);
+                            if (confirmDelete) {
+                              incompleteSessions.forEach(session => {
+                                deleteSession(course.id, session.id);
+                              });
+                            }
+                          }}
+                          className="text-xs px-2 py-1 bg-orange-100 hover:bg-orange-200 text-orange-700 rounded"
+                          disabled={course.sessions.filter(s => !s.completed).length === 0}
+                        >
+                          🗑️ Suppr. sessions restantes
+                        </button>
+
+                        <button
+                          onClick={() => {
+                            const allIncomplete = course.sessions.filter(s => !s.completed);
+                            allIncomplete.forEach(session => {
+                              markSessionComplete(course.id, session.id, true);
+                            });
+                          }}
+                          className="text-xs px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded"
+                          disabled={course.sessions.filter(s => !s.completed).length === 0}
+                        >
+                          ✅ Tout marquer réussi
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                <div className="pt-4 border-t">
+                  <button
+                    onClick={() => {
+                      const confirmDelete = window.confirm(`Supprimer TOUS les cours (${courses.length}) et toutes leurs sessions ?`);
+                      if (confirmDelete) {
+                        deleteAllCourses();
+                      }
+                    }}
+                    className="w-full p-3 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium transition-colors"
+                  >
+                    🗑️ Supprimer tous les cours ({courses.length})
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
           <div className="bg-white rounded-lg shadow-sm border mb-6">
             <div className="p-6 border-b flex items-center justify-between">
               <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
@@ -896,18 +1050,45 @@ const MedicalPlanningAgent = () => {
                       <p className="text-xs text-gray-400 italic">Repos</p>
                     ) : (
                       <div className="space-y-2">
-                        {dayData.sessions.map((session, idx) => (
-                          <div key={idx} className={`text-xs p-2 rounded ${session.color}`}>
-                            <div className="font-medium truncate">{session.course}</div>
-                            <div className="flex justify-between items-center">
-                              <span>{session.intervalLabel}</span>
-                              <span className="font-medium">{session.hours}h</span>
+                        {dayData.sessions.map((session, idx) => {
+                          // Trouver le cours correspondant pour avoir l'ID
+                          const correspondingCourse = courses.find(c => c.name === session.course);
+                          const correspondingSession = correspondingCourse?.sessions.find(s =>
+                            s.interval === session.interval &&
+                            s.date.toDateString() === dayData.date.toDateString()
+                          );
+
+                          return (
+                            <div key={idx} className={`relative group text-xs p-2 rounded ${session.color}`}>
+                              <div className="font-medium truncate">{session.course}</div>
+                              <div className="flex justify-between items-center">
+                                <span>{session.intervalLabel}</span>
+                                <span className="font-medium">{session.hours}h</span>
+                              </div>
+                              {session.rescheduled && (
+                                <div className="mt-1 text-orange-600">🔄 Reporté</div>
+                              )}
+
+                              {/* Bouton de suppression qui apparaît au hover */}
+                              {correspondingCourse && correspondingSession && !session.completed && (
+                                <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                                  <button
+                                    onClick={() => {
+                                      const confirmDelete = window.confirm(`Supprimer la session ${session.intervalLabel} de "${session.course}" du ${dayData.date.toLocaleDateString('fr-FR')} ?`);
+                                      if (confirmDelete) {
+                                        deleteSession(correspondingCourse.id, correspondingSession.id);
+                                      }
+                                    }}
+                                    className="w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs flex items-center justify-center"
+                                    title="Supprimer cette session"
+                                  >
+                                    ×
+                                  </button>
+                                </div>
+                              )}
                             </div>
-                            {session.rescheduled && (
-                              <div className="mt-1 text-orange-600">🔄 Reporté</div>
-                            )}
-                          </div>
-                        ))}
+                          );
+                        })}
                         <div className={`text-xs font-medium mt-2 ${isOverloaded ? 'text-red-600' : 'text-blue-600'}`}>
                           📊 Total: {dayData.totalHours}h
                         </div>
@@ -1074,7 +1255,7 @@ const MedicalPlanningAgent = () => {
             <ul className="text-xs space-y-1 text-orange-600">
               <li>• Report si conflit avec contraintes</li>
               <li>• Respect des intervalles J</li>
-              <li>• Max 10h/jour, Dimanche libre</li>
+              <li>• Max 9h/jour, Dimanche libre</li>
             </ul>
           </div>
 
