@@ -1,17 +1,14 @@
 import { reorganizeAllSessions } from '../../../../lib/planning';
+import { NextResponse } from 'next/server';
 
-export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
-
-  // Vérification API Key
-  const apiKey = req.headers['x-api-key'];
-  if (!apiKey || apiKey !== process.env.API_KEY) {
-    return res.status(401).json({ error: 'API Key invalide' });
-  }
-
+export async function POST(request) {
   try {
+    // Vérification API Key
+    const apiKey = request.headers.get('x-api-key');
+    if (!apiKey || apiKey !== process.env.API_KEY) {
+      return NextResponse.json({ error: 'API Key invalide' }, { status: 401 });
+    }
+
     const affectedSessions = await reorganizeAllSessions();
 
     // Webhook notification
@@ -27,13 +24,13 @@ export default async function handler(req, res) {
       });
     }
 
-    res.status(200).json({
+    return NextResponse.json({
       success: true,
       affectedSessions: affectedSessions.length,
       message: `Planning réorganisé. ${affectedSessions.length} session(s) affectée(s).`
     });
   } catch (err) {
     console.error('Erreur réorganisation:', err);
-    res.status(500).json({ error: 'Erreur réorganisation' });
+    return NextResponse.json({ error: 'Erreur réorganisation' }, { status: 500 });
   }
 }

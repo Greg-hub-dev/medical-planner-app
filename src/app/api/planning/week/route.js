@@ -1,15 +1,17 @@
 import { connectDB } from '../../../../../lib/database';
 import { generateWeeklyPlan } from '../../../../../lib/planning';
+import { NextResponse } from 'next/server';
 
-export default async function handler(req, res) {
-  const { offset = 0 } = req.query;
-
+export async function GET(request) {
   try {
-    await connectDB();
-    const weeklyPlan = await generateWeeklyPlan(parseInt(offset));
+    const { searchParams } = new URL(request.url);
+    const offset = parseInt(searchParams.get('offset') || '0');
 
-    res.status(200).json({
-      weekOffset: parseInt(offset),
+    await connectDB();
+    const weeklyPlan = await generateWeeklyPlan(offset);
+
+    return NextResponse.json({
+      weekOffset: offset,
       planning: weeklyPlan,
       summary: {
         totalSessions: Object.values(weeklyPlan).reduce((sum, day) => sum + day.sessions.length, 0),
@@ -19,6 +21,6 @@ export default async function handler(req, res) {
     });
   } catch (err) {
     console.error('Erreur génération planning:', err);
-    res.status(500).json({ error: 'Erreur génération planning' });
+    return NextResponse.json({ error: 'Erreur génération planning' }, { status: 500 });
   }
 }

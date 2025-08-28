@@ -1,6 +1,7 @@
 import { connectDB, Course, Constraint } from '../../../../lib/database';
+import { NextResponse } from 'next/server';
 
-export default async function handler(req, res) {
+export async function GET() {
   try {
     await connectDB();
 
@@ -22,9 +23,9 @@ export default async function handler(req, res) {
       }
     };
 
-    res.status(200).json(exportData);
+    return NextResponse.json(exportData);
   } catch (err) {
     console.error('Erreur export:', err);
-    res.status(500).json({ error: 'Erreur export' });
+    return NextResponse.json({ error: 'Erreur export' }, { status: 500 });
   }
 }
