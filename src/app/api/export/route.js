@@ -1,6 +1,6 @@
 import { connectDB, Course, Constraint } from '../../../../lib/database';
 
-export async function GET(request) {
+export default async function handler(req, res) {
   try {
     await connectDB();
 
@@ -22,19 +22,9 @@ export async function GET(request) {
       }
     };
 
-    return new Response(JSON.stringify(exportData), {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+    res.status(200).json(exportData);
   } catch (err) {
     console.error('Erreur export:', err);
-    return new Response(JSON.stringify({ error: 'Erreur export' }), {
-      status: 500,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    });
+    res.status(500).json({ error: 'Erreur export' });
   }
 }
