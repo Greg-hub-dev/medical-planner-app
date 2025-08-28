@@ -106,9 +106,9 @@ const MedicalPlanningAgent = () => {
 
   const workingHours: WorkingHours = {
     start: 9,
-    end: 20,
+    end: 19,
     lunchBreak: { start: 13, end: 14 },
-    availableHours: 10
+    availableHours: 9
   };
 
   const jIntervals: JInterval[] = [
@@ -203,6 +203,59 @@ const MedicalPlanningAgent = () => {
       totalSessions: sessions.length,
       completedSessions: 0
     };
+  };
+
+  const deleteCourse = (courseId: number): void => {
+    const updatedCourses = courses.filter(course => course.id !== courseId);
+    setCourses(updatedCourses);
+  };
+
+  const deleteAllCourses = (): void => {
+    setCourses([]);
+    setStats(prev => ({
+      ...prev,
+      totalCourses: 0,
+      todayHours: 0,
+      completionRate: 0
+    }));
+  };
+
+  const deleteSession = (courseId: number, sessionId: string): void => {
+    const updatedCourses = courses.map(course => {
+      if (course.id === courseId) {
+        const updatedSessions = course.sessions.filter(session => session.id !== sessionId);
+        return {
+          ...course,
+          sessions: updatedSessions,
+          totalSessions: updatedSessions.length,
+          completedSessions: updatedSessions.filter(s => s.completed).length
+        };
+      }
+      return course;
+    }).filter(course => course.sessions.length > 0); // Supprimer le cours s'il n'a plus de sessions
+
+    setCourses(updatedCourses);
+  };
+
+  const markSessionComplete = (courseId: number, sessionId: string, success: boolean): void => {
+    const updatedCourses = courses.map(course => {
+      if (course.id === courseId) {
+        const updatedSessions = course.sessions.map(session => {
+          if (session.id === sessionId) {
+            return { ...session, completed: true, success: success };
+          }
+          return session;
+        });
+        return {
+          ...course,
+          sessions: updatedSessions,
+          completedSessions: updatedSessions.filter(s => s.completed).length
+        };
+      }
+      return course;
+    });
+
+    setCourses(updatedCourses);
   };
 
   const rebalanceSessions = (coursesToBalance: Course[]): Course[] => {
@@ -366,6 +419,71 @@ const MedicalPlanningAgent = () => {
 
   const processAICommand = (message: string): string => {
     const lowerMsg = message.toLowerCase();
+
+    if (lowerMsg.includes('supprimer') || lowerMsg.includes('effacer') || lowerMsg.includes('retirer')) {
+
+      // Supprimer tous les cours
+      if (lowerMsg.includes('tous') && (lowerMsg.includes('cours') || lowerMsg.includes('tout'))) {
+        if (courses.length === 0) {
+          return `❌ Aucun cours à supprimer.\n\n💡 Ajoutez d'abord des cours avec "Ajouter [nom] avec [X] heures par jour"`;
+        }
+
+        const courseCount = courses.length;
+        deleteAllCourses();
+        return `🗑️ Tous les cours supprimés avec succès !\n\n📊 ${courseCount} cours et toutes leurs sessions ont été effacés.\n\n💡 Vous pouvez ajouter de nouveaux cours quand vous voulez !`;
+      }
+
+      // Supprimer un cours spécifique
+      const courseMatch = message.match(/supprimer\s+(?:le\s+cours\s+)?([^,.\n]+?)(?:\s+|$)/i);
+      if (courseMatch) {
+        const courseName = courseMatch[1].trim().toLowerCase();
+        const courseToDelete = courses.find(course => course.name.toLowerCase().includes(courseName));
+
+        if (courseToDelete) {
+          const sessionCount = courseToDelete.sessions.length;
+          deleteCourse(courseToDelete.id);
+
+          // Réorganiser les cours restants
+          if (courses.length > 1) {
+            const remainingCourses = courses.filter(c => c.id !== courseToDelete.id);
+            const rebalanced = rebalanceSessions(remainingCourses);
+            setCourses(rebalanced);
+          }
+
+          return `🗑️ Cours "${courseToDelete.name}" supprimé !\n\n📊 ${sessionCount} sessions supprimées\n• Planning automatiquement réorganisé\n\n💡 ${courses.length - 1} cours restant(s)`;
+        } else {
+          const availableCourses = courses.map(c => c.name).join(', ');
+          return `❌ Cours "${courseName}" non trouvé.\n\n📚 Cours disponibles : ${availableCourses || 'Aucun'}\n\n💡 Utilisez le nom exact du cours.`;
+        }
+      }
+
+      // Supprimer une session spécifique (un J)
+      const sessionMatch = message.match(/supprimer\s+(?:session\s+)?(j\+?\d+)\s+(?:de\s+|du\s+cours\s+)?([^,.\n]+)/i);
+      if (sessionMatch) {
+        const jInterval = sessionMatch[1].toUpperCase().replace('+', '+');
+        const courseName = sessionMatch[2].trim().toLowerCase();
+
+        const course = courses.find(c => c.name.toLowerCase().includes(courseName));
+        if (!course) {
+          return `❌ Cours "${courseName}" non trouvé.\n\n📚 Cours disponibles : ${courses.map(c => c.name).join(', ')}`;
+        }
+
+        const session = course.sessions.find(s => s.interval === jInterval);
+        if (!session) {
+          return `❌ Session ${jInterval} non trouvée pour "${course.name}".\n\n📋 Sessions disponibles : ${course.sessions.map(s => s.interval).join(', ')}`;
+        }
+
+        if (session.completed) {
+          return `⚠️ Session ${jInterval} de "${course.name}" déjà terminée.\n\n💡 Impossible de supprimer une session complétée.`;
+        }
+
+        deleteSession(course.id, session.id);
+
+        return `🗑️ Session ${jInterval} supprimée !\n\n📅 Session du ${session.date.toLocaleDateString('fr-FR')} retirée du planning\n• Cours "${course.name}" : ${course.sessions.length - 1} sessions restantes\n\n🔄 Planning automatiquement mis à jour`;
+      }
+
+      return `❓ Commande de suppression non reconnue.\n\n💡 Essayez :\n• "Supprimer tous les cours"\n• "Supprimer le cours Anatomie"\n• "Supprimer session J+7 de Physiologie"`;
+    }
 
     if (lowerMsg.includes('contrainte') || lowerMsg.includes('empêche') || lowerMsg.includes('rendez-vous') || lowerMsg.includes('rdv') || lowerMsg.includes('occupation')) {
       let constraintDate = new Date();
@@ -664,7 +782,7 @@ const MedicalPlanningAgent = () => {
     }
 
     if (lowerMsg.includes('aide')) {
-      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"`;
+      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n🗑️ SUPPRESSION :\n• "Supprimer tous les cours"\n• "Supprimer le cours [nom]"\n• "Supprimer session J+7 de [cours]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"`;
     }
 
     return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Mon planning du jour"\n• "Aide" pour plus de commandes`;
@@ -899,6 +1017,19 @@ const MedicalPlanningAgent = () => {
               >
                 📋 Contraintes
               </button>
+              <button
+                onClick={() => setInputMessage('Supprimer tous les cours')}
+                className="text-xs p-2 bg-gray-50 hover:bg-gray-100 rounded border text-gray-700"
+                disabled={courses.length === 0}
+              >
+                🗑️ Suppr. tous
+              </button>
+              <button
+                onClick={() => setInputMessage('Aide')}
+                className="text-xs p-2 bg-green-50 hover:bg-green-100 rounded border text-green-700"
+              >
+                ❓ Aide
+              </button>
             </div>
 
             <div className="mt-3 p-2 bg-gray-50 rounded text-xs">
@@ -911,7 +1042,7 @@ const MedicalPlanningAgent = () => {
                 ))}
               </div>
               <div className="text-gray-600">
-                💡 Contraintes : J ai une contrainte le [date] de [heure] à [heure]
+                💡 Contraintes : "J&apos;ai une contrainte le [date] de [heure] à [heure]"
               </div>
               {constraints.length > 0 && (
                 <div className="mt-1 text-orange-600">
