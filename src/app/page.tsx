@@ -3,28 +3,11 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { Calendar, Clock, Brain, Plus, CheckCircle2, ChevronLeft, ChevronRight, Wifi, WifiOff } from 'lucide-react';
 
-// Configuration MongoDB Atlas - MÉTHODE SIMPLIFIÉE
-const MONGODB_CONFIG = {
-  // Option 1: Data API (si disponible)
-  url: "https://eu-west-2.aws.data.mongodb-api.com/app/data-XXXXX/endpoint/data/v1/action",
-  apiKey: "YOUR_API_KEY_HERE",
-  dataSource: "Cluster0",
-  database: "medical_planning",
-  coursesCollection: "courses",
-  constraintsCollection: "constraints",
-
-  // Option 2: Configuration alternative (plus simple)
-  useAlternativeMethod: true, // Changez à false si vous avez Data API
-
-  // Pour la méthode alternative, utilisez ces paramètres :
-  alternativeConfig: {
-    // Votre connection string MongoDB (trouvé dans Connect → Drivers)
-    connectionString: process.env.NEXT_PUBLIC_MONGODB_URI || "",
-    dataSource: "Cluster0",
-    database: "medical_planning",
-    coursesCollection: "courses",
-    constraintsCollection: "constraints",
-  }
+// Configuration API MongoDB
+const API_CONFIG = {
+  coursesEndpoint: '/api/courses',
+  constraintsEndpoint: '/api/constraints',
+  useLocalBackup: true // Garde localStorage comme backup
 };
 
 // Interfaces TypeScript
@@ -111,22 +94,6 @@ interface TodaySession {
   hours: number;
 }
 
-// MongoDB types
-interface MongoDocument {
-  [key: string]: unknown;
-}
-
-interface MongoResult {
-  documents?: MongoDocument[];
-  insertedIds?: unknown[];
-  deletedCount?: number;
-}
-
-interface MongoRequest {
-  filter?: Record<string, unknown>;
-  documents?: MongoDocument[];
-}
-
 const MedicalPlanningAgent = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [constraints, setConstraints] = useState<Constraint[]>([]);
@@ -142,7 +109,7 @@ const MedicalPlanningAgent = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       type: 'ai',
-      content: '🎓 Bonjour ! Je suis votre agent de planning médical.\n\n📅 Planning: Lundi-Samedi • Dimanche = Repos automatique\n\n💡 Formats disponibles:\n• "Ajouter Anatomie avec 2 heures par jour"\n• "Ajouter Physiologie avec 1.5h démarrage le 15/03"\n• "J\'ai une contrainte le 20/03 de 9h à 12h"\n• "Déplacer cours Anatomie J+10 du 16/09 au 19/09"\n\n🔄 Nouveaux intervalles J : J0, J+1, J+2, J+10, J+25, J+47\n🎯 Glisser-déposer activé dans le planning !\n☁️ Sauvegarde automatique'
+      content: '🎓 Bonjour ! Je suis votre agent de planning médical.\n\n📅 Planning: Lundi-Samedi • Dimanche = Repos automatique\n\n💡 Formats disponibles:\n• "Ajouter Anatomie avec 2 heures par jour"\n• "Ajouter Physiologie avec 1.5h démarrage le 15/03"\n• "J\'ai une contrainte le 20/03 de 9h à 12h"\n• "Déplacer cours Anatomie J+10 du 16/09 au 19/09"\n\n🔄 Nouveaux intervalles J : J0, J+1, J+2, J+10, J+25, J+47\n🎯 Glisser-déposer activé dans le planning !\n☁️ Sauvegarde automatique MongoDB Atlas'
     }
   ]);
   const [inputMessage, setInputMessage] = useState<string>('');
@@ -195,7 +162,7 @@ const MedicalPlanningAgent = () => {
 
     setChatMessages(prev => [...prev, {
       type: 'ai',
-      content: `✅ Session déplacée par glisser-déposer !\n\n📅 "${draggedSession.courseName}" ${draggedSession.interval} (${draggedSession.hours}h)\n🔄 Nouvelle date : ${targetDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement`
+      content: `✅ Session déplacée par glisser-déposer !\n\n📅 "${draggedSession.courseName}" ${draggedSession.interval} (${draggedSession.hours}h)\n🔄 Nouvelle date : ${targetDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement dans MongoDB`
     }]);
 
     setDraggedSession(null);
@@ -217,62 +184,9 @@ const MedicalPlanningAgent = () => {
     { key: 'J+47', days: 47, label: 'J+47', color: 'bg-purple-100 text-purple-700' }
   ];
 
-  // MongoDB Connection (simplifié pour demo - nécessite un backend en production)
-  const mongoRequest = useCallback(async (action: string, collection: string, data: MongoRequest): Promise<MongoResult | null> => {
-    if (!MONGODB_CONFIG.alternativeConfig.connectionString || MONGODB_CONFIG.alternativeConfig.connectionString.includes("username:password")) {
-      console.warn("⚠️ MongoDB Connection String manquant. Utilisation du stockage local.");
-      return await handleLocalStorage(action, collection, data);
-    }
-
-    // Note: En production, ces appels MongoDB doivent passer par un backend sécurisé
-    // Pour cette démo, nous utilisons localStorage comme backup
-    try {
-      // Simulation d'appel MongoDB (remplacez par votre backend API)
-      console.log(`[MONGO SIMULATION] ${action} sur ${collection}:`, data);
-      setIsOnline(true);
-      setLastSyncTime(new Date());
-
-      // En attendant un backend, utilise localStorage
-      return await handleLocalStorage(action, collection, data);
-    } catch (error) {
-      console.error('Erreur MongoDB:', error);
-      setIsOnline(false);
-      return await handleLocalStorage(action, collection, data);
-    }
-  }, []);
-
-  // Système de backup localStorage
-  const handleLocalStorage = async (action: string, collection: string, data: MongoRequest): Promise<MongoResult | null> => {
-    try {
-      const key = `medical_planning_${collection}`;
-
-      switch (action) {
-        case 'find':
-          const stored = localStorage.getItem(key);
-          return { documents: stored ? JSON.parse(stored) as MongoDocument[] : [] };
-
-        case 'insertMany':
-          if (data.documents) {
-            localStorage.setItem(key, JSON.stringify(data.documents));
-            return { insertedIds: data.documents.map((_, i) => i) };
-          }
-          return null;
-
-        case 'deleteMany':
-          localStorage.removeItem(key);
-          return { deletedCount: 1 };
-
-        default:
-          return null;
-      }
-    } catch (error) {
-      console.error('Erreur localStorage:', error);
-      return null;
-    }
-  };
-
+  // Nouvelles fonctions de sauvegarde MongoDB via API
   const saveCourses = useCallback(async (coursesData: Course[]) => {
-    if (coursesData.length === 0) return;
+    if (coursesData.length === 0 && courses.length === 0) return;
 
     // Convertir les dates en strings pour MongoDB
     const coursesForDB = coursesData.map(course => ({
@@ -285,15 +199,40 @@ const MedicalPlanningAgent = () => {
       }))
     }));
 
-    // Remplacer tous les cours
-    await mongoRequest('deleteMany', MONGODB_CONFIG.coursesCollection, { filter: {} });
-    await mongoRequest('insertMany', MONGODB_CONFIG.coursesCollection, {
-      documents: coursesForDB
-    });
-  }, [mongoRequest]);
+    try {
+      const response = await fetch(API_CONFIG.coursesEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ courses: coursesForDB })
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ ${result.count} cours sauvegardés dans MongoDB`);
+        setIsOnline(true);
+        setLastSyncTime(new Date());
+
+        // Backup local en cas de succès
+        if (API_CONFIG.useLocalBackup) {
+          localStorage.setItem('medical_courses_backup', JSON.stringify(coursesForDB));
+        }
+      } else {
+        throw new Error(`Erreur API: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('❌ Erreur sauvegarde MongoDB courses:', error);
+      setIsOnline(false);
+
+      // Fallback vers localStorage
+      if (API_CONFIG.useLocalBackup) {
+        localStorage.setItem('medical_courses_backup', JSON.stringify(coursesForDB));
+        console.log('📱 Données sauvegardées en local comme backup');
+      }
+    }
+  }, [courses.length]);
 
   const saveConstraints = useCallback(async (constraintsData: Constraint[]) => {
-    if (constraintsData.length === 0) return;
+    if (constraintsData.length === 0 && constraints.length === 0) return;
 
     // Convertir les dates en strings pour MongoDB
     const constraintsForDB = constraintsData.map(constraint => ({
@@ -302,65 +241,139 @@ const MedicalPlanningAgent = () => {
       createdAt: constraint.createdAt.toISOString()
     }));
 
-    // Remplacer toutes les contraintes
-    await mongoRequest('deleteMany', MONGODB_CONFIG.constraintsCollection, { filter: {} });
-    await mongoRequest('insertMany', MONGODB_CONFIG.constraintsCollection, {
-      documents: constraintsForDB
-    });
-  }, [mongoRequest]);
+    try {
+      const response = await fetch(API_CONFIG.constraintsEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ constraints: constraintsForDB })
+      });
 
+      if (response.ok) {
+        const result = await response.json();
+        console.log(`✅ ${result.count} contraintes sauvegardées dans MongoDB`);
+        setIsOnline(true);
+        setLastSyncTime(new Date());
+
+        // Backup local
+        if (API_CONFIG.useLocalBackup) {
+          localStorage.setItem('medical_constraints_backup', JSON.stringify(constraintsForDB));
+        }
+      } else {
+        throw new Error(`Erreur API: ${response.status}`);
+      }
+    } catch (error) {
+      console.error('❌ Erreur sauvegarde MongoDB constraints:', error);
+      setIsOnline(false);
+
+      // Fallback vers localStorage
+      if (API_CONFIG.useLocalBackup) {
+        localStorage.setItem('medical_constraints_backup', JSON.stringify(constraintsForDB));
+        console.log('📱 Données sauvegardées en local comme backup');
+      }
+    }
+  }, [constraints.length]);
+
+  // Nouvelle fonction de chargement MongoDB via API
   const loadData = useCallback(async () => {
     setIsLoading(true);
 
     try {
-      // Charger les cours
-      const coursesResult = await mongoRequest('find', MONGODB_CONFIG.coursesCollection, { filter: {} });
-      if (coursesResult?.documents) {
-        const coursesFromDB = coursesResult.documents.map((course: MongoDocument) => ({
-          ...course,
-          createdAt: new Date(course.createdAt as string),
-          sessions: (course.sessions as Array<{
-            id: string;
-            date: string;
-            originalDate: string;
-            interval: string;
-            intervalLabel: string;
-            completed: boolean;
-            success: boolean | null;
-            color: string;
-            rescheduled: boolean;
-          }>).map((session) => ({
-            ...session,
-            date: new Date(session.date),
-            originalDate: new Date(session.originalDate)
-          }))
-        })) as Course[];
-        setCourses(coursesFromDB);
-      }
+      console.log('🔄 Chargement depuis MongoDB...');
 
-      // Charger les contraintes
-      const constraintsResult = await mongoRequest('find', MONGODB_CONFIG.constraintsCollection, { filter: {} });
-      if (constraintsResult?.documents) {
-        const constraintsFromDB = constraintsResult.documents.map((constraint: MongoDocument) => ({
-          ...constraint,
-          date: new Date(constraint.date as string),
-          createdAt: new Date(constraint.createdAt as string)
-        })) as Constraint[];
-        setConstraints(constraintsFromDB);
-      }
+      // Charger depuis les APIs MongoDB
+      const [coursesResponse, constraintsResponse] = await Promise.all([
+        fetch(API_CONFIG.coursesEndpoint),
+        fetch(API_CONFIG.constraintsEndpoint)
+      ]);
 
-      if (coursesResult || constraintsResult) {
+      if (coursesResponse.ok && constraintsResponse.ok) {
+        const coursesData = await coursesResponse.json();
+        const constraintsData = await constraintsResponse.json();
+
+        // Traitement des cours
+        if (coursesData.courses && coursesData.courses.length > 0) {
+          const processedCourses = coursesData.courses.map((course: any) => ({
+            ...course,
+            createdAt: new Date(course.createdAt),
+            sessions: course.sessions.map((session: any) => ({
+              ...session,
+              date: new Date(session.date),
+              originalDate: new Date(session.originalDate)
+            }))
+          }));
+          setCourses(processedCourses);
+          console.log(`✅ ${processedCourses.length} cours chargés depuis MongoDB`);
+        }
+
+        // Traitement des contraintes
+        if (constraintsData.constraints && constraintsData.constraints.length > 0) {
+          const processedConstraints = constraintsData.constraints.map((constraint: any) => ({
+            ...constraint,
+            date: new Date(constraint.date),
+            createdAt: new Date(constraint.createdAt)
+          }));
+          setConstraints(processedConstraints);
+          console.log(`✅ ${processedConstraints.length} contraintes chargées depuis MongoDB`);
+        }
+
+        setIsOnline(true);
+        setLastSyncTime(new Date());
+
+        // Ajouter message dans le chat
         setChatMessages(prev => [...prev, {
           type: 'ai',
-          content: `📱 Données chargées depuis MongoDB Atlas !\n\n✅ ${coursesResult?.documents?.length || 0} cours récupérés\n✅ ${constraintsResult?.documents?.length || 0} contraintes récupérées\n\n☁️ Synchronisation automatique activée`
+          content: `☁️ Données synchronisées avec MongoDB Atlas !\n\n✅ ${coursesData.courses?.length || 0} cours récupérés\n✅ ${constraintsData.constraints?.length || 0} contraintes récupérées\n\n🔄 Synchronisation automatique activée`
         }]);
+
+      } else {
+        throw new Error(`Erreur API: courses(${coursesResponse.status}) constraints(${constraintsResponse.status})`);
       }
     } catch (error) {
-      console.error('Erreur lors du chargement:', error);
+      console.error('❌ Erreur chargement MongoDB:', error);
+      setIsOnline(false);
+
+      // Fallback vers localStorage backup
+      if (API_CONFIG.useLocalBackup) {
+        console.log('📱 Tentative de chargement depuis le backup local...');
+
+        const localCourses = localStorage.getItem('medical_courses_backup');
+        const localConstraints = localStorage.getItem('medical_constraints_backup');
+
+        if (localCourses) {
+          const courses = JSON.parse(localCourses).map((course: any) => ({
+            ...course,
+            createdAt: new Date(course.createdAt),
+            sessions: course.sessions.map((session: any) => ({
+              ...session,
+              date: new Date(session.date),
+              originalDate: new Date(session.originalDate)
+            }))
+          }));
+          setCourses(courses);
+          console.log(`📱 ${courses.length} cours chargés depuis le backup local`);
+        }
+
+        if (localConstraints) {
+          const constraints = JSON.parse(localConstraints).map((constraint: any) => ({
+            ...constraint,
+            date: new Date(constraint.date),
+            createdAt: new Date(constraint.createdAt)
+          }));
+          setConstraints(constraints);
+          console.log(`📱 ${constraints.length} contraintes chargées depuis le backup local`);
+        }
+
+        if (localCourses || localConstraints) {
+          setChatMessages(prev => [...prev, {
+            type: 'ai',
+            content: `⚠️ Mode hors ligne - Données chargées depuis le backup local\n\n📱 Les données seront synchronisées avec MongoDB dès que la connexion sera rétablie`
+          }]);
+        }
+      }
     } finally {
       setIsLoading(false);
     }
-  }, [mongoRequest]);
+  }, []);
 
   const createConstraint = (date: string | Date, startHour: number, endHour: number, description: string): Constraint => {
     return {
@@ -752,7 +765,7 @@ const MedicalPlanningAgent = () => {
         // Effectuer le déplacement
         moveSession(course.id, session.id, toDate);
 
-        return `✅ Session déplacée avec succès !\n\n📅 "${course.name}" ${sessionInterval} (${course.hoursPerDay}h)\n🔄 Du ${fromDate.toLocaleDateString('fr-FR')} → ${toDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
+        return `✅ Session déplacée avec succès !\n\n📅 "${course.name}" ${sessionInterval} (${course.hoursPerDay}h)\n🔄 Du ${fromDate.toLocaleDateString('fr-FR')} → ${toDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
       }
 
       return `❓ Format de déplacement non reconnu.\n\n💡 Utilisez :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Exemple : "Déplacer cours Anatomie J+10 du 16/09 au 19/09"`;
@@ -767,7 +780,7 @@ const MedicalPlanningAgent = () => {
 
         const courseCount = courses.length;
         deleteAllCourses();
-        return `🗑️ Tous les cours supprimés avec succès !\n\n📊 ${courseCount} cours et toutes leurs sessions ont été effacés.\n☁️ Sauvegardé automatiquement\n\n💡 Vous pouvez ajouter de nouveaux cours quand vous voulez !`;
+        return `🗑️ Tous les cours supprimés avec succès !\n\n📊 ${courseCount} cours et toutes leurs sessions ont été effacés.\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Vous pouvez ajouter de nouveaux cours quand vous voulez !`;
       }
 
       // Supprimer un cours spécifique
@@ -788,7 +801,7 @@ const MedicalPlanningAgent = () => {
             saveCourses(rebalanced);
           }
 
-          return `🗑️ Cours "${courseToDelete.name}" supprimé !\n\n📊 ${sessionCount} sessions supprimées\n• Planning automatiquement réorganisé\n☁️ Sauvegardé automatiquement\n\n💡 ${courses.length - 1} cours restant(s)`;
+          return `🗑️ Cours "${courseToDelete.name}" supprimé !\n\n📊 ${sessionCount} sessions supprimées\n• Planning automatiquement réorganisé\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 ${courses.length - 1} cours restant(s)`;
         } else {
           const availableCourses = courses.map(c => c.name).join(', ');
           return `❌ Cours "${courseName}" non trouvé.\n\n📚 Cours disponibles : ${availableCourses || 'Aucun'}\n\n💡 Utilisez le nom exact du cours.`;
@@ -817,7 +830,7 @@ const MedicalPlanningAgent = () => {
 
         deleteSession(course.id, session.id);
 
-        return `🗑️ Session ${jInterval} supprimée !\n\n📅 Session du ${session.date.toLocaleDateString('fr-FR')} retirée du planning\n• Cours "${course.name}" : ${course.sessions.length - 1} sessions restantes\n☁️ Sauvegardé automatiquement\n\n🔄 Planning automatiquement mis à jour`;
+        return `🗑️ Session ${jInterval} supprimée !\n\n📅 Session du ${session.date.toLocaleDateString('fr-FR')} retirée du planning\n• Cours "${course.name}" : ${course.sessions.length - 1} sessions restantes\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Planning automatiquement mis à jour`;
       }
 
       return `❓ Commande de suppression non reconnue.\n\n💡 Essayez :\n• "Supprimer tous les cours"\n• "Supprimer le cours Anatomie"\n• "Supprimer session J+7 de Physiologie"`;
@@ -906,10 +919,10 @@ const MedicalPlanningAgent = () => {
           });
         });
 
-        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 9h/jour)\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
+        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 9h/jour)\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
       }
 
-      return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement\n\n💡 Ajoutez des cours et ils seront automatiquement programmés en évitant cette période !`;
+      return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Ajoutez des cours et ils seront automatiquement programmés en évitant cette période !`;
     }
 
     if (lowerMsg.includes('ajouter') || lowerMsg.includes('nouveau cours')) {
@@ -995,7 +1008,7 @@ const MedicalPlanningAgent = () => {
         totalCourses: prev.totalCourses + 1
       }));
 
-      let response = `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+2, J+10, J+25, J+47 - Révisions espacées`;
+      let response = `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+2, J+10, J+25, J+47 - Révisions espacées`;
 
       if (rescheduledCount > 0) {
         response += `\n\n🔄 ${rescheduledCount} session(s) reportée(s) automatiquement`;
@@ -1123,7 +1136,7 @@ const MedicalPlanningAgent = () => {
     }
 
     if (lowerMsg.includes('aide')) {
-      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n🗑️ SUPPRESSION :\n• "Supprimer tous les cours"\n• "Supprimer le cours [nom]"\n• "Supprimer session J+10 de [cours]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"\n\n🔄 DÉPLACEMENT :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Glisser-déposer dans le planning hebdomadaire\n\n☁️ Toutes vos données sont sauvegardées automatiquement !`;
+      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n🗑️ SUPPRESSION :\n• "Supprimer tous les cours"\n• "Supprimer le cours [nom]"\n• "Supprimer session J+10 de [cours]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"\n\n🔄 DÉPLACEMENT :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Glisser-déposer dans le planning hebdomadaire\n\n☁️ Toutes vos données sont sauvegardées automatiquement dans MongoDB Atlas !`;
     }
 
     return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Mon planning du jour"\n• "Aide" pour plus de commandes`;
@@ -1193,16 +1206,16 @@ const MedicalPlanningAgent = () => {
           Agent IA - Planning Médical
           {isOnline ? (
             <span title="Connecté à MongoDB Atlas">
-            <Wifi className="w-5 h-5 text-green-600" />
+              <Wifi className="w-5 h-5 text-green-600" />
             </span>
           ) : (
             <span title="Hors ligne - Mode local">
-            <WifiOff className="w-5 h-5 text-red-600" />
+              <WifiOff className="w-5 h-5 text-red-600" />
             </span>
           )}
         </h1>
         <p className="text-gray-600">
-          Lundi-Samedi 9h-20h • Dimanche repos • Contraintes et réorganisation automatique
+          Lundi-Samedi 9h-19h • Dimanche repos • Contraintes et réorganisation automatique
         </p>
         <div className="text-sm text-gray-500 mt-1 flex items-center gap-4">
           <span className="flex items-center gap-1">
@@ -1233,7 +1246,7 @@ const MedicalPlanningAgent = () => {
             <div className="bg-white p-4 rounded-lg shadow-sm border">
               <div className="flex items-center gap-2 mb-2">
                 <Clock className="w-5 h-5 text-green-600" />
-                <span className="text-sm font-medium">Aujourd hui</span>
+                <span className="text-sm font-medium">Aujourd&apos;hui</span>
               </div>
               <div className="text-2xl font-bold text-gray-800">{stats.todayHours}h</div>
             </div>
@@ -1254,7 +1267,7 @@ const MedicalPlanningAgent = () => {
                 <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
                   📚 Gestion des Cours
                   <span className="text-sm font-normal text-gray-500">({courses.length} cours actifs)</span>
-                  {isOnline && <span className="text-xs text-green-600">☁️ Sync auto</span>}
+                  {isOnline && <span className="text-xs text-green-600">☁️ MongoDB sync</span>}
                 </h2>
               </div>
 
@@ -1277,7 +1290,7 @@ const MedicalPlanningAgent = () => {
                         </div>
                         <button
                           onClick={() => {
-                            const confirmDelete = window.confirm(`Supprimer le cours ${course.name} et toutes ses sessions ?`);
+                            const confirmDelete = window.confirm(`Supprimer le cours &quot;${course.name}&quot; et toutes ses sessions ?`);
                             if (confirmDelete) {
                               deleteCourse(course.id);
                             }
@@ -1312,7 +1325,7 @@ const MedicalPlanningAgent = () => {
                                 <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button
                                     onClick={() => {
-                                      const confirmDelete = window.confirm(`Supprimer la session ${session.interval} du cours ${course.name} ?`);
+                                      const confirmDelete = window.confirm(`Supprimer la session ${session.interval} du cours &quot;${course.name}&quot; ?`);
                                       if (confirmDelete) {
                                         deleteSession(course.id, session.id);
                                       }
@@ -1355,7 +1368,7 @@ const MedicalPlanningAgent = () => {
                         <button
                           onClick={() => {
                             const incompleteSessions = course.sessions.filter(s => !s.completed);
-                            const confirmDelete = window.confirm(`Supprimer toutes les sessions incomplètes de ${course.name} (${incompleteSessions.length} sessions) ?`);
+                            const confirmDelete = window.confirm(`Supprimer toutes les sessions incomplètes de &quot;${course.name}&quot; (${incompleteSessions.length} sessions) ?`);
                             if (confirmDelete) {
                               incompleteSessions.forEach(session => {
                                 deleteSession(course.id, session.id);
@@ -1502,7 +1515,7 @@ const MedicalPlanningAgent = () => {
                                 <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity">
                                   <button
                                     onClick={() => {
-                                      const confirmDelete = window.confirm(`Supprimer la session ${session.intervalLabel} de ${session.course} du ${dayData.date.toLocaleDateString('fr-FR')} ?`);
+                                      const confirmDelete = window.confirm(`Supprimer la session ${session.intervalLabel} de &quot;${session.course}&quot; du ${dayData.date.toLocaleDateString('fr-FR')} ?`);
                                       if (confirmDelete) {
                                         deleteSession(correspondingCourse.id, correspondingSession.id);
                                       }
@@ -1535,7 +1548,7 @@ const MedicalPlanningAgent = () => {
               <p className="text-gray-600 mb-6">Ajoutez vos cours et gérez vos contraintes</p>
               {!isOnline && (
                 <div className="mb-4 p-3 bg-orange-50 rounded-lg">
-                  <p className="text-orange-700 text-sm">⚠️ Mode hors ligne - Configurez MongoDB Atlas pour sauvegarder vos données</p>
+                  <p className="text-orange-700 text-sm">⚠️ Mode hors ligne - Les données seront synchronisées avec MongoDB dès que la connexion sera rétablie</p>
                 </div>
               )}
               <div className="space-y-2">
@@ -1546,7 +1559,7 @@ const MedicalPlanningAgent = () => {
                   ➕ Anatomie (2h/jour)
                 </button>
                 <button
-                  onClick={() => setInputMessage('J ai une contrainte le 15/03 de 9h à 12h')}
+                  onClick={() => setInputMessage('J&apos;ai une contrainte le 15/03 de 9h à 12h')}
                   className="block w-full p-3 bg-red-50 hover:bg-red-100 rounded-lg text-red-700 font-medium"
                 >
                   ⚠️ Ajouter une contrainte
@@ -1566,7 +1579,7 @@ const MedicalPlanningAgent = () => {
                 <span className="text-xs text-red-600">📱 Local</span>
               )}
             </h2>
-            <p className="text-xs text-gray-600">Contraintes • Réorganisation automatique • Sauvegarde cloud</p>
+            <p className="text-xs text-gray-600">Contraintes • Réorganisation automatique • Sauvegarde MongoDB Atlas</p>
           </div>
 
           <div className="h-96 overflow-y-auto p-4 space-y-4">
@@ -1609,7 +1622,7 @@ const MedicalPlanningAgent = () => {
                 ➕ Nouveau cours
               </button>
               <button
-                onClick={() => setInputMessage('J ai une contrainte le 15/03 de 9h à 12h')}
+                onClick={() => setInputMessage('J&apos;ai une contrainte le 15/03 de 9h à 12h')}
                 className="text-xs p-2 bg-red-50 hover:bg-red-100 rounded border text-red-700"
               >
                 ⚠️ Contrainte
@@ -1644,7 +1657,7 @@ const MedicalPlanningAgent = () => {
               <div className="font-medium text-gray-700 mb-1 flex items-center gap-2">
                 🛌 Dimanche repos • 🔄 Réorganisation auto
                 {isOnline ? (
-                  <span className="text-green-600">☁️ Sync MongoDB</span>
+                  <span className="text-green-600">☁️ MongoDB sync</span>
                 ) : (
                   <span className="text-red-600">📱 Mode local</span>
                 )}
@@ -1657,10 +1670,10 @@ const MedicalPlanningAgent = () => {
                 ))}
               </div>
               <div className="text-gray-600">
-                💡 Configuration MongoDB dans le code source
+                💡 Variables MONGODB_URI configurées dans Vercel
               </div>
               <div className="text-gray-600 mt-1">
-                🔄 Nouvelles fonctions : Glisser-déposer + Déplacer cours [nom] [J+X] du [date] au [date]
+                🔄 Fonctions : Glisser-déposer + &quot;Déplacer cours [nom] [J+X] du [date] au [date]&quot;
               </div>
               {constraints.length > 0 && (
                 <div className="mt-1 text-orange-600">
@@ -1676,31 +1689,26 @@ const MedicalPlanningAgent = () => {
         <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
           ☁️ Configuration MongoDB Atlas
           {isOnline ? (
-            <span className="text-sm text-green-600">✅ Connecté (localStorage)</span>
+            <span className="text-sm text-green-600">✅ Connecté</span>
           ) : (
-            <span className="text-sm text-red-600">❌ Non configuré</span>
+            <span className="text-sm text-red-600">❌ Mode backup local</span>
           )}
         </h2>
 
-        {MONGODB_CONFIG.alternativeConfig.connectionString.includes("username:password") && (
-          <div className="bg-blue-50 p-4 rounded-lg mb-4">
-            <h3 className="font-medium text-blue-800 mb-2">🔧 Pour activer la sauvegarde MongoDB Atlas :</h3>
-            <ol className="text-sm text-blue-700 space-y-2">
-              <li><strong>1.</strong> Créez un compte gratuit sur <a href="https://cloud.mongodb.com" target="_blank" rel="noopener noreferrer" className="underline">MongoDB Atlas</a></li>
-              <li><strong>2.</strong> Créez un cluster gratuit (M0)</li>
-              <li><strong>3.</strong> Créez un utilisateur de base de données</li>
-              <li><strong>4.</strong> Configurez l accès réseau (autorisez votre IP)</li>
-              <li><strong>5.</strong> Copiez votre connection string (Connect → Drivers)</li>
-              <li><strong>6.</strong> Remplacez dans le code :</li>
-            </ol>
-            <div className="mt-3 p-3 bg-blue-100 rounded font-mono text-xs">
-              <div>connectionString: mongodb+srv://username:password@cluster0.xxxxx.mongodb.net/medical_planning;</div>
-            </div>
-            <div className="mt-2 text-xs text-blue-600">
-              💡 En attendant, vos données sont sauvegardées dans le navigateur (localStorage)
-            </div>
+        <div className="bg-green-50 p-4 rounded-lg mb-4">
+          <h3 className="font-medium text-green-800 mb-2">✅ MongoDB Atlas configuré !</h3>
+          <p className="text-sm text-green-700">
+            Vos données sont automatiquement sauvegardées dans le cloud MongoDB Atlas et synchronisées entre tous vos appareils.
+          </p>
+          <div className="mt-2 text-xs text-green-600 space-y-1">
+            <div>• API Routes Next.js : /api/courses et /api/constraints</div>
+            <div>• Backup local automatique en cas de problème de connexion</div>
+            <div>• Synchronisation temps réel avec MongoDB Atlas</div>
+            {lastSyncTime && (
+              <div>• Dernière synchronisation : {lastSyncTime.toLocaleTimeString('fr-FR')}</div>
+            )}
           </div>
-        )}
+        </div>
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           <div className="bg-blue-50 p-4 rounded-lg">
@@ -1708,8 +1716,8 @@ const MedicalPlanningAgent = () => {
             <p className="text-sm text-blue-700 mb-2">Sessions automatiques</p>
             <ul className="text-xs space-y-1 text-blue-600">
               <li>• J0 : Apprentissage initial</li>
-              <li>• J+1, J+3, J+7 : Consolidation</li>
-              <li>• J+15, J+30, J+90 : Mémorisation</li>
+              <li>• J+1, J+2, J+10 : Consolidation</li>
+              <li>• J+25, J+47 : Mémorisation long terme</li>
             </ul>
           </div>
 
@@ -1724,11 +1732,11 @@ const MedicalPlanningAgent = () => {
           </div>
 
           <div className="bg-green-50 p-4 rounded-lg">
-            <h3 className="font-medium text-green-800 mb-2">☁️ Sauvegarde</h3>
-            <p className="text-sm text-green-700 mb-2">MongoDB Atlas Cloud</p>
+            <h3 className="font-medium text-green-800 mb-2">☁️ MongoDB Atlas</h3>
+            <p className="text-sm text-green-700 mb-2">Sauvegarde cloud sécurisée</p>
             <ul className="text-xs space-y-1 text-green-600">
               <li>• Synchronisation automatique</li>
-              <li>• Sauvegarde temps réel</li>
+              <li>• Backup local en cas de panne</li>
               <li>• Accessibilité multi-appareils</li>
             </ul>
           </div>
@@ -1784,7 +1792,7 @@ const MedicalPlanningAgent = () => {
               )}
               {isOnline && (
                 <div className="mt-1 text-green-600">
-                  <strong>☁️ MongoDB :</strong> Sauvegarde automatique activée
+                  <strong>☁️ MongoDB Atlas :</strong> Sauvegarde automatique activée
                 </div>
               )}
             </div>

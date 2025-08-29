@@ -1,62 +1,45 @@
-import { connectDB, Constraint } from '../../../../lib/database';
-import { reorganizeAllSessions } from '../../../../lib/planning';
-import { NextResponse } from 'next/server';
+import { MongoClient } from 'mongodb';
+import { NextRequest } from 'next/server';
+
+const client = new MongoClient(process.env.MONGODB_URI!);
+const dbName = process.env.MONGODB_DATABASE || 'medical_planning';
 
 export async function GET() {
   try {
-    await connectDB();
-    const constraints = await Constraint.find().sort({ date: 1 });
-    return NextResponse.json(constraints);
-  } catch (err) {
-    console.error('Erreur GET constraints:', err);
-    return NextResponse.json({ error: 'Erreur serveur' }, { status: 500 });
+    await client.connect();
+    const db = client.db(dbName);
+    const collection = db.collection('constraints');
+
+    const constraints = await collection.find({}).toArray();
+
+    return Response.json({ constraints });
+  } catch (error) {
+    console.error('Erreur MongoDB GET constraints:', error);
+    return Response.json({ error: 'Erreur serveur' }, { status: 500 });
+  } finally {
+    await client.close();
   }
 }
 
-export async function POST(request) {
+export async function POST(request: NextRequest) {
   try {
-    const apiKey = request.headers.get('x-api-key');
-    if (!apiKey || apiKey !== process.env.API_KEY) {
-      return NextResponse.json({ error: 'API Key invalide' }, { status: 401 });
+    const { constraints } = await request.json();
+
+    await client.connect();
+    const db = client.db(dbName);
+    const collection = db.collection('constraints');
+
+    // Vider la collection et insérer les nouvelles contraintes
+    await collection.deleteMany({});
+    if (constraints.length > 0) {
+      await collection.insertMany(constraints);
     }
 
-    await connectDB();
-    const { date, startHour, endHour, description, type } = await request.json();
-
-    if (!date) {
-      return NextResponse.json({ error: 'Date requise' }, { status: 400 });
-    }
-
-    const constraint = await Constraint.create({
-      date: new Date(date),
-      startHour: startHour || 0,
-      endHour: endHour || 24,
-      description: description || 'Contrainte personnelle',
-      type: type || 'manual'
-    });
-
-    const affectedSessions = await reorganizeAllSessions();
-
-    if (process.env.WEBHOOK_URL) {
-      await fetch(process.env.WEBHOOK_URL, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          type: 'constraint_added',
-          constraint: constraint,
-          affectedSessions: affectedSessions,
-          timestamp: new Date().toISOString()
-        })
-      });
-    }
-
-    return NextResponse.json({
-      constraint,
-      affectedSessions: affectedSessions.length,
-      message: `Contrainte ajoutée. ${affectedSessions.length} session(s) reportée(s).`
-    }, { status: 201 });
-  } catch (err) {
-    console.error('Erreur création contrainte:', err);
-    return NextResponse.json({ error: 'Erreur création contrainte' }, { status: 500 });
+    return Response.json({ success: true, count: constraints.length });
+  } catch (error) {
+    console.error('Erreur MongoDB POST constraints:', error);
+    return Response.json({ error: 'Erreur serveur' }, { status: 500 });
+  } finally {
+    await client.close();
   }
 }
