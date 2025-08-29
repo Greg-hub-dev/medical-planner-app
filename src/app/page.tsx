@@ -1189,9 +1189,13 @@ const MedicalPlanningAgent = () => {
           <Brain className="text-blue-600" />
           Agent IA - Planning Médical
           {isOnline ? (
-            <Wifi className="w-5 h-5 text-green-600" title="Connecté à MongoDB Atlas" />
+            <span title="Connecté à MongoDB Atlas">
+            <Wifi className="w-5 h-5 text-green-600" />
+            </span>
           ) : (
-            <WifiOff className="w-5 h-5 text-red-600" title="Hors ligne - Mode local" />
+            <span title="Hors ligne - Mode local">
+            <WifiOff className="w-5 h-5 text-red-600" />
+            </span>
           )}
         </h1>
         <p className="text-gray-600">
