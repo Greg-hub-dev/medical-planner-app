@@ -324,10 +324,10 @@ const MedicalPlanningAgent = () => {
 
         // Traitement des cours
         if (coursesData.courses && coursesData.courses.length > 0) {
-          const processedCourses = coursesData.courses.map((course: any) => ({
+          const processedCourses = coursesData.courses.map((course: Course) => ({
             ...course,
             createdAt: new Date(course.createdAt),
-            sessions: course.sessions.map((session: any) => ({
+            sessions: course.sessions.map((session: Session) => ({
               ...session,
               date: new Date(session.date),
               originalDate: new Date(session.originalDate)
@@ -339,7 +339,7 @@ const MedicalPlanningAgent = () => {
 
         // Traitement des contraintes
         if (constraintsData.constraints && constraintsData.constraints.length > 0) {
-          const processedConstraints = constraintsData.constraints.map((constraint: any) => ({
+          const processedConstraints = constraintsData.constraints.map((constraint: Constraint) => ({
             ...constraint,
             date: new Date(constraint.date),
             createdAt: new Date(constraint.createdAt)
@@ -372,10 +372,10 @@ const MedicalPlanningAgent = () => {
         const localConstraints = localStorage.getItem('medical_constraints_backup');
 
         if (localCourses) {
-          const courses = JSON.parse(localCourses).map((course: any) => ({
+          const courses = JSON.parse(localCourses).map((course: Course) => ({
             ...course,
             createdAt: new Date(course.createdAt),
-            sessions: course.sessions.map((session: any) => ({
+            sessions: course.sessions.map((session: Session) => ({
               ...session,
               date: new Date(session.date),
               originalDate: new Date(session.originalDate)
@@ -386,7 +386,7 @@ const MedicalPlanningAgent = () => {
         }
 
         if (localConstraints) {
-          const constraints = JSON.parse(localConstraints).map((constraint: any) => ({
+          const constraints = JSON.parse(localConstraints).map((constraint: Constraint) => ({
             ...constraint,
             date: new Date(constraint.date),
             createdAt: new Date(constraint.createdAt)
