@@ -216,7 +216,7 @@ const MedicalPlanningAgent = () => {
 
   // MongoDB Connection (simplifié pour demo - nécessite un backend en production)
   const mongoRequest = useCallback(async (action: string, collection: string, data: MongoRequest): Promise<MongoResult | null> => {
-    if (!MONGODB_CONFIG.connectionString || MONGODB_CONFIG.connectionString.includes("username:password")) {
+    if (!MONGODB_CONFIG.alternativeConfig.connectionString || MONGODB_CONFIG.alternativeConfig.connectionString.includes("username:password")) {
       console.warn("⚠️ MongoDB Connection String manquant. Utilisation du stockage local.");
       return await handleLocalStorage(action, collection, data);
     }
