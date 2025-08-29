@@ -94,6 +94,38 @@ interface TodaySession {
   hours: number;
 }
 
+// Types pour les données MongoDB
+interface MongoDbCourse {
+  id: number;
+  name: string;
+  hoursPerDay: number;
+  createdAt: string;
+  sessions: MongoDbSession[];
+  totalSessions: number;
+  completedSessions: number;
+}
+
+interface MongoDbSession {
+  id: string;
+  date: string;
+  originalDate: string;
+  interval: string;
+  intervalLabel: string;
+  completed: boolean;
+  success: boolean | null;
+  color: string;
+  rescheduled: boolean;
+}
+
+interface MongoDbConstraint {
+  id: number;
+  date: string;
+  startHour: number;
+  endHour: number;
+  description: string;
+  createdAt: string;
+}
+
 const MedicalPlanningAgent = () => {
   const [courses, setCourses] = useState<Course[]>([]);
   const [constraints, setConstraints] = useState<Constraint[]>([]);
