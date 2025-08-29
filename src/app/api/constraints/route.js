@@ -1,10 +1,19 @@
 import { MongoClient } from 'mongodb';
-import { NextRequest } from 'next/server';
 
-const client = new MongoClient(process.env.MONGODB_URI!);
+const mongoUri = process.env.MONGODB_URI || '';
 const dbName = process.env.MONGODB_DATABASE || 'medical_planning';
 
+if (!mongoUri) {
+  console.error('MONGODB_URI environment variable is not set');
+}
+
 export async function GET() {
+  if (!mongoUri) {
+    return Response.json({ error: 'MongoDB URI not configured' }, { status: 500 });
+  }
+
+  const client = new MongoClient(mongoUri);
+
   try {
     await client.connect();
     const db = client.db(dbName);
@@ -21,7 +30,13 @@ export async function GET() {
   }
 }
 
-export async function POST(request: NextRequest) {
+export async function POST(request) {
+  if (!mongoUri) {
+    return Response.json({ error: 'MongoDB URI not configured' }, { status: 500 });
+  }
+
+  const client = new MongoClient(mongoUri);
+
   try {
     const { constraints } = await request.json();
 
