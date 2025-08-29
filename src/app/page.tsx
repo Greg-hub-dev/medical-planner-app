@@ -1679,7 +1679,7 @@ const MedicalPlanningAgent = () => {
           )}
         </h2>
 
-        {MONGODB_CONFIG.connectionString.includes("username:password") && (
+        {MONGODB_CONFIG.alternativeConfig.connectionString.includes("username:password") && (
           <div className="bg-blue-50 p-4 rounded-lg mb-4">
             <h3 className="font-medium text-blue-800 mb-2">🔧 Pour activer la sauvegarde MongoDB Atlas :</h3>
             <ol className="text-sm text-blue-700 space-y-2">
