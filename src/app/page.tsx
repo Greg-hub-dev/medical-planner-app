@@ -20,7 +20,10 @@ const MONGODB_CONFIG = {
   alternativeConfig: {
     // Votre connection string MongoDB (trouvé dans Connect → Drivers)
     connectionString: process.env.NEXT_PUBLIC_MONGODB_URI || "",
-
+    dataSource: "Cluster0",
+    database: "medical_planning",
+    coursesCollection: "courses",
+    constraintsCollection: "constraints",
   }
 };
 
