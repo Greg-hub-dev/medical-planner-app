@@ -494,12 +494,12 @@ const MedicalPlanningAgent = () => {
   const deleteCourse = (courseId: number): void => {
     const updatedCourses = courses.filter(course => course.id !== courseId);
     setCourses(updatedCourses);
-    saveCourses(updatedCourses); // Sauvegarde automatique
+  //  saveCourses(updatedCourses); // Sauvegarde automatique
   };
 
   const deleteAllCourses = (): void => {
     setCourses([]);
-    saveCourses([]); // Sauvegarde automatique
+  //  saveCourses([]); // Sauvegarde automatique
     setStats(prev => ({
       ...prev,
       totalCourses: 0,
@@ -523,7 +523,7 @@ const MedicalPlanningAgent = () => {
     }).filter(course => course.sessions.length > 0);
 
     setCourses(updatedCourses);
-    saveCourses(updatedCourses); // Sauvegarde automatique
+  //  saveCourses(updatedCourses); // Sauvegarde automatique
   };
 
   const markSessionComplete = (courseId: number, sessionId: string, success: boolean): void => {
@@ -567,7 +567,7 @@ const MedicalPlanningAgent = () => {
     });
 
     setCourses(updatedCourses);
-    saveCourses(updatedCourses);
+  //  saveCourses(updatedCourses);
   };
 
   const rebalanceSessions = (coursesToBalance: Course[]): Course[] => {
@@ -937,12 +937,12 @@ const MedicalPlanningAgent = () => {
       const newConstraint = createConstraint(constraintDate, startHour, endHour, description);
       const updatedConstraints = [...constraints, newConstraint];
       setConstraints(updatedConstraints);
-      saveConstraints(updatedConstraints); // Sauvegarde automatique
+     // saveConstraints(updatedConstraints); // Sauvegarde automatique
 
       if (courses.length > 0) {
         const rebalanced = rebalanceSessions(courses);
         setCourses(rebalanced);
-        saveCourses(rebalanced);
+     //   saveCourses(rebalanced);
 
         let affectedSessions = 0;
         rebalanced.forEach(course => {
@@ -1017,7 +1017,7 @@ const MedicalPlanningAgent = () => {
 
       const rebalanced = rebalanceSessions(updatedCourses);
       setCourses(rebalanced);
-      saveCourses(rebalanced); // Sauvegarde automatique
+     // saveCourses(rebalanced); // Sauvegarde automatique
 
       let rescheduledCount = 0;
       let constraintAffected = false;
