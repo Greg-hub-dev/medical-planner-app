@@ -1264,7 +1264,7 @@ const MedicalPlanningAgent = () => {
         <div className="bg-white p-4 rounded-lg shadow-sm border">
           <div className="flex items-center gap-2 mb-2">
             <Clock className="w-5 h-5 text-green-600" />
-            <span className="text-sm font-medium">Aujourd'hui</span>
+            <span className="text-sm font-medium">Aujourd hui</span>
           </div>
           <div className="text-2xl font-bold text-gray-800">{stats.todayHours}h</div>
         </div>
@@ -1540,7 +1540,7 @@ const MedicalPlanningAgent = () => {
                   💡 Variables MONGODB_URI configurées dans Vercel
                 </div>
                 <div className="text-gray-600 mt-1">
-                  🔄 Fonctions : Glisser-déposer + "Déplacer cours [nom] [J+X] du [date] au [date]"
+                  🔄 Fonctions : Glisser-déposer + Déplacer cours [nom] [J+X] du [date] au [date]
                 </div>
                 {constraints.length > 0 && (
                   <div className="mt-1 text-orange-600">
@@ -1710,12 +1710,12 @@ const MedicalPlanningAgent = () => {
             <div className="bg-white rounded-lg shadow-sm border p-12 text-center">
               <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
               <h3 className="text-xl font-medium text-gray-800 mb-2">Aucun cours à gérer</h3>
-              <p className="text-gray-600 mb-6">Ajoutez des cours depuis l'assistant IA pour les voir apparaître ici</p>
+              <p className="text-gray-600 mb-6">Ajoutez des cours depuis l assistant IA pour les voir apparaître ici</p>
               <button
                 onClick={() => setActiveTab('planning')}
                 className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
               >
-                🤖 Aller à l'Assistant IA
+                🤖 Aller à l Assistant IA
               </button>
             </div>
           )}
