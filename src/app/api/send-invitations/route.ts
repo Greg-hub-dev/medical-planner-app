@@ -25,7 +25,7 @@ interface RequestBody {
 
 // Configuration du transporteur email
 const createTransporter = () => {
-  return nodemailer.createTransporter({
+  return nodemailer.createTransport({
     service: 'gmail', // ou 'smtp.ethereal.email' pour test
     auth: {
       user: process.env.EMAIL_USER, // votre.email@gmail.com
@@ -228,31 +228,11 @@ export async function POST(request: NextRequest) {
     // Envoyer un email par semaine
     for (const [weekKey, weekSessions] of Object.entries(sessionsByWeek)) {
       try {
-        // Grouper par jour pour calculer les horaires intelligemment
-        const sessionsByDay: { [dateKey: string]: SessionData[] } = {};
-        weekSessions.forEach(sessionData => {
-          const dateKey = new Date(sessionData.session.date).toDateString();
-          if (!sessionsByDay[dateKey]) {
-            sessionsByDay[dateKey] = [];
-          }
-          sessionsByDay[dateKey].push(sessionData);
-        });
-
-        // Créer les pièces jointes .ics avec horaires optimisés
-        const icsAttachments = weekSessions.map((sessionData, globalIndex) => {
-          const dateKey = new Date(sessionData.session.date).toDateString();
-          const daySessionIndex = sessionsByDay[dateKey].findIndex(s => s.session.id === sessionData.session.id);
-          const totalSessionsThisDay = sessionsByDay[dateKey].length;
-
+        // Créer les pièces jointes .ics
+        const icsAttachments = weekSessions.map((sessionData) => {
           return {
             filename: `${sessionData.course.name.replace(/\s+/g, '-')}-${sessionData.session.interval}.ics`,
-            content: generateICSContent(
-              sessionData,
-              userEmail,
-              timePrefs,
-              daySessionIndex,
-              totalSessionsThisDay
-            ),
+            content: generateICSContent(sessionData, userEmail),
             contentType: 'text/calendar; charset=utf-8; method=REQUEST'
           };
         });
@@ -271,7 +251,7 @@ export async function POST(request: NextRequest) {
 
       } catch (error) {
         console.error(`Erreur envoi semaine ${weekKey}:`, error);
-        errors.push(`Semaine ${weekKey}: ${error.message}`);
+        errors.push(`Semaine ${weekKey}: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
       }
     }
 
