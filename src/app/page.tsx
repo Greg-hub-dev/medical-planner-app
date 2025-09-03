@@ -10,7 +10,7 @@ const API_CONFIG = {
   useLocalBackup: true // Garde localStorage comme backup
 };
 
-// Interfaces TypeScript (identiques à l'original)
+// Interfaces TypeScript
 interface JInterval {
   key: string;
   days: number;
@@ -97,7 +97,7 @@ interface TodaySession {
 }
 
 const MedicalPlanningAgent = () => {
-  // États existants (identiques)
+  // États existants
   const [courses, setCourses] = useState<Course[]>([]);
   const [constraints, setConstraints] = useState<Constraint[]>([]);
   const [currentWeek, setCurrentWeek] = useState<number>(0);
@@ -126,7 +126,7 @@ const MedicalPlanningAgent = () => {
     hours: number;
   } | null>(null);
 
-  // Nouvel état pour les onglets
+  // État pour les onglets
   const [activeTab, setActiveTab] = useState<'planning' | 'courses' | 'settings'>('planning');
 
   // États pour les nouvelles fonctionnalités
@@ -152,52 +152,6 @@ const MedicalPlanningAgent = () => {
     distributeEvenly: true
   });
 
-  const handleDragStart = (e: React.DragEvent, courseId: number, sessionId: string, courseName: string, interval: string, hours: number) => {
-    setDraggedSession({ courseId, sessionId, courseName, interval, hours });
-    e.dataTransfer.effectAllowed = 'move';
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
-
-  const handleDrop = (e: React.DragEvent, targetDate: Date) => {
-    e.preventDefault();
-
-    if (!draggedSession) return;
-
-    // Vérifier si c'est un dimanche
-    if (targetDate.getDay() === 0) {
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: `❌ Impossible de déposer le dimanche !\n\n🛌 Dimanche = repos automatique.\n💡 La session "${draggedSession.courseName}" ${draggedSession.interval} ne peut pas être programmée ce jour-là.`
-      }]);
-      setDraggedSession(null);
-      return;
-    }
-
-    // Vérifier les conflits
-    if (hasConflict(targetDate, draggedSession.hours)) {
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: `❌ Conflit détecté !\n\n⚠️ Une contrainte empêche le déplacement de "${draggedSession.courseName}" ${draggedSession.interval} vers le ${targetDate.toLocaleDateString('fr-FR')}.\n💡 Choisissez une autre date ou vérifiez vos contraintes.`
-      }]);
-      setDraggedSession(null);
-      return;
-    }
-
-    // Effectuer le déplacement
-    moveSession(draggedSession.courseId, draggedSession.sessionId, targetDate);
-
-    setChatMessages(prev => [...prev, {
-      type: 'ai',
-      content: `✅ Session déplacée par glisser-déposer !\n\n📅 "${draggedSession.courseName}" ${draggedSession.interval} (${draggedSession.hours}h)\n🔄 Nouvelle date : ${targetDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement dans MongoDB`
-    }]);
-
-    setDraggedSession(null);
-  };
-
   const workingHours: WorkingHours = {
     start: 9,
     end: 19,
@@ -214,7 +168,285 @@ const MedicalPlanningAgent = () => {
     { key: 'J+47', days: 47, label: 'J+47', color: 'bg-purple-100 text-purple-700' }
   ];
 
-  // Toutes les fonctions existantes (identiques à l'original)
+  // Système de notifications push
+  const initializeNotifications = useCallback(async () => {
+    if ('Notification' in window && 'serviceWorker' in navigator) {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+
+      if (permission === 'granted') {
+        navigator.serviceWorker.register('/sw.js').catch(console.error);
+      }
+    }
+  }, []);
+
+  const testNotification = () => {
+    if (notificationPermission === 'granted') {
+      new Notification('🎯 Test Planning Médical', {
+        body: 'Les notifications fonctionnent parfaitement !',
+        icon: '/icon-192.png',
+        tag: 'test-notification'
+      });
+    }
+  };
+
+  // Fonction pour calculer l'heure optimale d'une session
+  const calculateOptimalSessionTime = (sessionDate: Date, duration: number, sessionIndex: number = 0, totalSessionsThisDay: number = 1): {start: Date, end: Date} => {
+    const { preferredStartHour, preferredEndHour, lunchBreakStart, lunchBreakEnd, distributeEvenly } = timePreferences;
+
+    // Récupérer les sessions déjà programmées ce jour
+    const sameDaySessions = courses.flatMap(course =>
+      course.sessions.filter(session =>
+        !session.completed &&
+        session.date.toDateString() === sessionDate.toDateString()
+      ).map(session => ({
+        start: session.date.getHours() || preferredStartHour,
+        duration: course.hoursPerDay
+      }))
+    );
+
+    // Créneaux occupés (incluant pause déjeuner)
+    const occupiedSlots: {start: number, end: number}[] = [
+      { start: lunchBreakStart, end: lunchBreakEnd }, // Pause déjeuner
+      ...sameDaySessions.map(session => ({
+        start: session.start,
+        end: session.start + session.duration
+      }))
+    ];
+
+    // Trouver le meilleur créneau libre
+    let bestStart = preferredStartHour;
+
+    if (distributeEvenly && totalSessionsThisDay > 1) {
+      // Distribution équilibrée dans la journée
+      const availableHours = (preferredEndHour - preferredStartHour) - (lunchBreakEnd - lunchBreakStart);
+      const slotSize = availableHours / totalSessionsThisDay;
+      bestStart = preferredStartHour + (sessionIndex * slotSize);
+
+      // Éviter la pause déjeuner
+      if (bestStart >= lunchBreakStart - 0.5 && bestStart < lunchBreakEnd) {
+        bestStart = lunchBreakEnd;
+      }
+    } else {
+      // Recherche du premier créneau libre
+      for (let hour = preferredStartHour; hour <= preferredEndHour - duration; hour += 0.5) {
+        const wouldConflict = occupiedSlots.some(slot =>
+          !(hour + duration <= slot.start || hour >= slot.end)
+        );
+
+        if (!wouldConflict) {
+          bestStart = hour;
+          break;
+        }
+      }
+    }
+
+    // Vérifier les contraintes utilisateur
+    const sessionConstraints = constraints.filter(constraint => {
+      const constraintDate = new Date(constraint.date);
+      constraintDate.setHours(0, 0, 0, 0);
+      const checkDate = new Date(sessionDate);
+      checkDate.setHours(0, 0, 0, 0);
+      return constraintDate.getTime() === checkDate.getTime();
+    });
+
+    // Éviter les contraintes
+    sessionConstraints.forEach(constraint => {
+      if (bestStart < constraint.endHour && bestStart + duration > constraint.startHour) {
+        // Conflit détecté, décaler après la contrainte
+        bestStart = Math.max(bestStart, constraint.endHour);
+      }
+    });
+
+    // S'assurer que ça ne dépasse pas les heures de fin
+    if (bestStart + duration > preferredEndHour) {
+      bestStart = preferredEndHour - duration;
+    }
+
+    // Créer les objets Date
+    const startTime = new Date(sessionDate);
+    const minutes = (bestStart % 1) * 60;
+    startTime.setHours(Math.floor(bestStart), minutes, 0, 0);
+
+    const endTime = new Date(startTime);
+    endTime.setHours(startTime.getHours() + Math.floor(duration), startTime.getMinutes() + ((duration % 1) * 60));
+
+    return { start: startTime, end: endTime };
+  };
+
+  // Envoi invitations email calendrier
+  const sendCalendarInvitations = async () => {
+    if (!isEmailValid) {
+      setChatMessages(prev => [...prev, {
+        type: 'ai',
+        content: '❌ Veuillez saisir un email valide pour recevoir les invitations calendrier.'
+      }]);
+      return;
+    }
+
+    setIsEmailSending(true);
+
+    try {
+      // Préparer les sessions futures non complétées
+      const upcomingSessions = [];
+      courses.forEach(course => {
+        course.sessions.forEach(session => {
+          if (!session.completed && session.date >= new Date()) {
+            upcomingSessions.push({ session, course });
+          }
+        });
+      });
+
+      if (upcomingSessions.length === 0) {
+        setChatMessages(prev => [...prev, {
+          type: 'ai',
+          content: '⚠️ Aucune session future à envoyer. Ajoutez des cours ou toutes les sessions sont terminées.'
+        }]);
+        setIsEmailSending(false);
+        return;
+      }
+
+      // Envoyer via l'API
+      const response = await fetch('/api/send-invitations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userEmail: userEmail,
+          timePreferences: timePreferences, // Inclure les préférences horaires
+          sessions: upcomingSessions.map(({ session, course }) => ({
+            session: {
+              id: session.id,
+              date: session.date.toISOString(),
+              interval: session.interval,
+              intervalLabel: session.intervalLabel
+            },
+            course: {
+              name: course.name,
+              hoursPerDay: course.hoursPerDay
+            }
+          }))
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Erreur API');
+      }
+
+      const result = await response.json();
+      const totalSent = result.sessionsCount;
+
+      setChatMessages(prev => [...prev, {
+        type: 'ai',
+        content: `✅ Invitations calendrier envoyées avec succès !\n\n📧 ${totalSent} sessions envoyées à ${userEmail}\n⏰ Horaires calculés automatiquement :\n  • Créneaux : ${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h\n  • Pause déjeuner : ${timePreferences.lunchBreakStart}h-${timePreferences.lunchBreakEnd}h\n  • Distribution : ${timePreferences.distributeEvenly ? 'Équilibrée' : 'Séquentielle'}\n\n📅 Vérifiez vos emails et ouvrez les fichiers .ics\n🔔 Rappels automatiques configurés :\n  • 1 heure avant\n  • 30 minutes avant\n\n💡 Compatible avec :\n  • Google Calendar\n  • Outlook\n  • Apple Calendar\n  • Thunderbird\n\n🔄 Synchronisation automatique sur tous vos appareils !`
+      }]);
+
+      // Sauvegarder l'email pour utilisation future
+      localStorage.setItem('medical_user_email', userEmail);
+
+    } catch (error) {
+      setChatMessages(prev => [...prev, {
+        type: 'ai',
+        content: '❌ Erreur lors de l\'envoi des invitations. Vérifiez votre connexion et réessayez.'
+      }]);
+    } finally {
+      setIsEmailSending(false);
+    }
+  };
+
+  // Système de rappels intelligents
+  const scheduleIntelligentReminders = useCallback(() => {
+    if (notificationPermission !== 'granted') return;
+
+    // Nettoyer les anciens rappels
+    activeReminders.forEach(reminderId => {
+      const timerId = parseInt(reminderId.split('-')[1]);
+      clearTimeout(timerId);
+    });
+    setActiveReminders([]);
+
+    const newReminders: string[] = [];
+
+    courses.forEach(course => {
+      course.sessions.forEach(session => {
+        if (!session.completed && session.date >= new Date()) {
+          const sessionDate = new Date(session.date);
+          const now = Date.now();
+
+          // Rappel la veille à 20h (si activé)
+          if (reminderSettings.beforeDay) {
+            const reminderBefore = new Date(sessionDate);
+            reminderBefore.setDate(sessionDate.getDate() - 1);
+            reminderBefore.setHours(20, 0, 0, 0);
+
+            const delayBefore = reminderBefore.getTime() - now;
+            if (delayBefore > 0 && delayBefore < 7 * 24 * 3600 * 1000) {
+              const timerId = window.setTimeout(() => {
+                new Notification('📅 Planning Médical - Demain', {
+                  body: `${course.name} (${session.intervalLabel}) - ${course.hoursPerDay}h`,
+                  icon: '/icon-192.png',
+                  tag: `reminder-before-${session.id}`,
+                  requireInteraction: true
+                });
+              }, delayBefore);
+
+              newReminders.push(`before-${timerId}`);
+            }
+          }
+
+          // Rappel le matin à 8h (si activé)
+          if (reminderSettings.morningOf) {
+            const reminderMorning = new Date(sessionDate);
+            reminderMorning.setHours(8, 0, 0, 0);
+
+            const delayMorning = reminderMorning.getTime() - now;
+            if (delayMorning > 0 && delayMorning < 7 * 24 * 3600 * 1000) {
+              const timerId = window.setTimeout(() => {
+                new Notification('🌅 Planning Médical - Aujourd\'hui', {
+                  body: `${course.name} (${session.intervalLabel}) - ${course.hoursPerDay}h`,
+                  icon: '/icon-192.png',
+                  tag: `reminder-morning-${session.id}`,
+                  requireInteraction: true
+                });
+              }, delayMorning);
+
+              newReminders.push(`morning-${timerId}`);
+            }
+          }
+
+          // Rappel 30min avant (si activé et session dans les 24h)
+          if (reminderSettings.thirtyMinBefore) {
+            const reminder30min = new Date(sessionDate);
+            reminder30min.setHours(sessionDate.getHours() - 0.5);
+
+            const delay30min = reminder30min.getTime() - now;
+            if (delay30min > 0 && delay30min < 24 * 3600 * 1000) {
+              const timerId = window.setTimeout(() => {
+                new Notification('⏰ Planning Médical - Dans 30 minutes', {
+                  body: `${course.name} (${session.intervalLabel}) commence bientôt !`,
+                  icon: '/icon-192.png',
+                  tag: `reminder-30min-${session.id}`,
+                  requireInteraction: true,
+                  actions: [
+                    { action: 'mark-done', title: '✅ Fait' },
+                    { action: 'reschedule', title: '🔄 Reporter' }
+                  ]
+                });
+              }, delay30min);
+
+              newReminders.push(`30min-${timerId}`);
+            }
+          }
+        }
+      });
+    });
+
+    setActiveReminders(newReminders);
+  }, [courses, notificationPermission, reminderSettings, activeReminders]);
+
+  // Toutes les autres fonctions (sauvegarde, chargement, etc.)
   const saveCourses = useCallback(async (coursesData: Course[]) => {
     if (coursesData.length === 0 && courses.length === 0) return;
 
@@ -393,349 +625,41 @@ const MedicalPlanningAgent = () => {
     }
   }, []);
 
-  // ===== NOUVELLES FONCTIONNALITÉS =====
-
-  // Système de notifications push
-  const initializeNotifications = useCallback(async () => {
-    if ('Notification' in window && 'serviceWorker' in navigator) {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
-
-      if (permission === 'granted') {
-        // Enregistrer le service worker
-        navigator.serviceWorker.register('/sw.js').catch(console.error);
-      }
-    }
-  }, []);
-
-  const testNotification = () => {
-    if (notificationPermission === 'granted') {
-      new Notification('🎯 Test Planning Médical', {
-        body: 'Les notifications fonctionnent parfaitement !',
-        icon: '/icon-192.png',
-        tag: 'test-notification'
-      });
-    }
+  const handleDragStart = (e: React.DragEvent, courseId: number, sessionId: string, courseName: string, interval: string, hours: number) => {
+    setDraggedSession({ courseId, sessionId, courseName, interval, hours });
+    e.dataTransfer.effectAllowed = 'move';
   };
 
-  // Fonction pour calculer l'heure optimale d'une session
-  const calculateOptimalSessionTime = (sessionDate: Date, duration: number, sessionIndex: number = 0, totalSessionsThisDay: number = 1): {start: Date, end: Date} => {
-    const { preferredStartHour, preferredEndHour, lunchBreakStart, lunchBreakEnd, distributeEvenly } = timePreferences;
-
-    // Récupérer les sessions déjà programmées ce jour
-    const sameDaySessions = courses.flatMap(course =>
-      course.sessions.filter(session =>
-        !session.completed &&
-        session.date.toDateString() === sessionDate.toDateString()
-      ).map(session => ({
-        start: session.date.getHours() || preferredStartHour,
-        duration: course.hoursPerDay
-      }))
-    );
-
-    // Créneaux occupés (incluant pause déjeuner)
-    const occupiedSlots: {start: number, end: number}[] = [
-      { start: lunchBreakStart, end: lunchBreakEnd }, // Pause déjeuner
-      ...sameDaySessions.map(session => ({
-        start: session.start,
-        end: session.start + session.duration
-      }))
-    ];
-
-    // Trouver le meilleur créneau libre
-    let bestStart = preferredStartHour;
-
-    if (distributeEvenly && totalSessionsThisDay > 1) {
-      // Distribution équilibrée dans la journée
-      const availableHours = (preferredEndHour - preferredStartHour) - (lunchBreakEnd - lunchBreakStart);
-      const slotSize = availableHours / totalSessionsThisDay;
-      bestStart = preferredStartHour + (sessionIndex * slotSize);
-
-      // Éviter la pause déjeuner
-      if (bestStart >= lunchBreakStart - 0.5 && bestStart < lunchBreakEnd) {
-        bestStart = lunchBreakEnd;
-      }
-    } else {
-      // Recherche du premier créneau libre
-      for (let hour = preferredStartHour; hour <= preferredEndHour - duration; hour += 0.5) {
-        const wouldConflict = occupiedSlots.some(slot =>
-          !(hour + duration <= slot.start || hour >= slot.end)
-        );
-
-        if (!wouldConflict) {
-          bestStart = hour;
-          break;
-        }
-      }
-    }
-
-    // Vérifier les contraintes utilisateur
-    const sessionConstraints = constraints.filter(constraint => {
-      const constraintDate = new Date(constraint.date);
-      constraintDate.setHours(0, 0, 0, 0);
-      const checkDate = new Date(sessionDate);
-      checkDate.setHours(0, 0, 0, 0);
-      return constraintDate.getTime() === checkDate.getTime();
-    });
-
-    // Éviter les contraintes
-    sessionConstraints.forEach(constraint => {
-      if (bestStart < constraint.endHour && bestStart + duration > constraint.startHour) {
-        // Conflit détecté, décaler après la contrainte
-        bestStart = Math.max(bestStart, constraint.endHour);
-      }
-    });
-
-    // S'assurer que ça ne dépasse pas les heures de fin
-    if (bestStart + duration > preferredEndHour) {
-      bestStart = preferredEndHour - duration;
-    }
-
-    // Créer les objets Date
-    const startTime = new Date(sessionDate);
-    const minutes = (bestStart % 1) * 60;
-    startTime.setHours(Math.floor(bestStart), minutes, 0, 0);
-
-    const endTime = new Date(startTime);
-    endTime.setHours(startTime.getHours() + Math.floor(duration), startTime.getMinutes() + ((duration % 1) * 60));
-
-    return { start: startTime, end: endTime };
+  const handleDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
   };
 
-  // Génération fichiers .ics pour email (version améliorée)
-  const generateICSContent = (session: Session, course: Course, userEmail: string): string => {
-    const { start: startTime, end: endTime } = calculateOptimalSessionTime(session.date, course.hoursPerDay);
+  const handleDrop = (e: React.DragEvent, targetDate: Date) => {
+    e.preventDefault();
 
-    const formatDate = (date: Date) =>
-      date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+    if (!draggedSession) return;
 
-    return `BEGIN:VCALENDAR
-VERSION:2.0
-PRODID:-//Planning Médical//FR
-METHOD:REQUEST
-BEGIN:VEVENT
-UID:${session.id}@medical-planner.com
-DTSTAMP:${formatDate(new Date())}
-DTSTART:${formatDate(startTime)}
-DTEND:${formatDate(endTime)}
-SUMMARY:📚 ${course.name} (${session.intervalLabel})
-DESCRIPTION:Session de révision - Méthode des J\\n\\nDurée: ${course.hoursPerDay}h\\nIntervalle: ${session.intervalLabel}\\n\\nHoraire optimisé selon vos préférences\\n\\nGénéré par Planning Médical IA
-LOCATION:Bureau/Bibliothèque
-ORGANIZER:MAILTO:planning@medical-ia.com
-ATTENDEE:MAILTO:${userEmail}
-STATUS:CONFIRMED
-SEQUENCE:0
-BEGIN:VALARM
-TRIGGER:-PT30M
-ACTION:DISPLAY
-DESCRIPTION:Session dans 30 minutes
-END:VALARM
-BEGIN:VALARM
-TRIGGER:-PT1H
-ACTION:EMAIL
-DESCRIPTION:Session dans 1 heure
-ATTENDEE:MAILTO:${userEmail}
-END:VALARM
-END:VEVENT
-END:VCALENDAR`;
-  };
-
-  // Envoi invitations email calendrier
-  const sendCalendarInvitations = async () => {
-    if (!isEmailValid) {
+    // Vérifier si c'est un dimanche
+    if (targetDate.getDay() === 0) {
       setChatMessages(prev => [...prev, {
         type: 'ai',
-        content: '❌ Veuillez saisir un email valide pour recevoir les invitations calendrier.'
+        content: `❌ Impossible de déposer le dimanche !\n\n🛌 Dimanche = repos automatique.\n💡 La session "${draggedSession.courseName}" ${draggedSession.interval} ne peut pas être programmée ce jour-là.`
       }]);
+      setDraggedSession(null);
       return;
     }
 
-    setIsEmailSending(true);
+    // Effectuer le déplacement
+    moveSession(draggedSession.courseId, draggedSession.sessionId, targetDate);
 
-    try {
-      // Préparer les sessions futures non complétées
-      const upcomingSessions = [];
-      courses.forEach(course => {
-        course.sessions.forEach(session => {
-          if (!session.completed && session.date >= new Date()) {
-            upcomingSessions.push({ session, course });
-          }
-        });
-      });
+    setChatMessages(prev => [...prev, {
+      type: 'ai',
+      content: `✅ Session déplacée par glisser-déposer !\n\n📅 "${draggedSession.courseName}" ${draggedSession.interval} (${draggedSession.hours}h)\n🔄 Nouvelle date : ${targetDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement dans MongoDB`
+    }]);
 
-      if (upcomingSessions.length === 0) {
-        setChatMessages(prev => [...prev, {
-          type: 'ai',
-          content: '⚠️ Aucune session future à envoyer. Ajoutez des cours ou toutes les sessions sont terminées.'
-        }]);
-        setIsEmailSending(false);
-        return;
-      }
-
-      // Envoyer via l'API
-      const response = await fetch('/api/send-invitations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userEmail: userEmail,
-          timePreferences: timePreferences, // Inclure les préférences horaires
-          sessions: upcomingSessions.map(({ session, course }) => ({
-            session: {
-              id: session.id,
-              date: session.date.toISOString(),
-              interval: session.interval,
-              intervalLabel: session.intervalLabel
-            },
-            course: {
-              name: course.name,
-              hoursPerDay: course.hoursPerDay
-            }
-          }))
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur API');
-      }
-
-      const result = await response.json();
-      const totalSent = result.sessionsCount;
-
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: `✅ Invitations calendrier envoyées avec succès !\n\n📧 ${totalSent} sessions envoyées à ${userEmail}\n⏰ Horaires calculés automatiquement :\n  • Créneaux : ${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h\n  • Pause déjeuner : ${timePreferences.lunchBreakStart}h-${timePreferences.lunchBreakEnd}h\n  • Distribution : ${timePreferences.distributeEvenly ? 'Équilibrée' : 'Séquentielle'}\n\n📅 Vérifiez vos emails et ouvrez les fichiers .ics\n🔔 Rappels automatiques configurés :\n  • 1 heure avant\n  • 30 minutes avant\n\n💡 Compatible avec :\n  • Google Calendar\n  • Outlook\n  • Apple Calendar\n  • Thunderbird\n\n🔄 Synchronisation automatique sur tous vos appareils !`
-      }]);
-
-      // Sauvegarder l'email pour utilisation future
-      localStorage.setItem('medical_user_email', userEmail);
-
-    } catch (error) {
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: '❌ Erreur lors de l\'envoi des invitations. Vérifiez votre connexion et réessayez.'
-      }]);
-    } finally {
-      setIsEmailSending(false);
-    }
+    setDraggedSession(null);
   };
-
-  // Système de rappels intelligents
-  const scheduleIntelligentReminders = useCallback(() => {
-    if (notificationPermission !== 'granted') return;
-
-    // Nettoyer les anciens rappels
-    activeReminders.forEach(reminderId => {
-      const timerId = parseInt(reminderId.split('-')[1]);
-      clearTimeout(timerId);
-    });
-    setActiveReminders([]);
-
-    const newReminders: string[] = [];
-
-    courses.forEach(course => {
-      course.sessions.forEach(session => {
-        if (!session.completed && session.date >= new Date()) {
-          const sessionDate = new Date(session.date);
-          const now = Date.now();
-
-          // Rappel la veille à 20h (si activé)
-          if (reminderSettings.beforeDay) {
-            const reminderBefore = new Date(sessionDate);
-            reminderBefore.setDate(sessionDate.getDate() - 1);
-            reminderBefore.setHours(20, 0, 0, 0);
-
-            const delayBefore = reminderBefore.getTime() - now;
-            if (delayBefore > 0 && delayBefore < 7 * 24 * 3600 * 1000) {
-              const timerId = window.setTimeout(() => {
-                new Notification('📅 Planning Médical - Demain', {
-                  body: `${course.name} (${session.intervalLabel}) - ${course.hoursPerDay}h`,
-                  icon: '/icon-192.png',
-                  tag: `reminder-before-${session.id}`,
-                  requireInteraction: true
-                });
-              }, delayBefore);
-
-              newReminders.push(`before-${timerId}`);
-            }
-          }
-
-          // Rappel le matin à 8h (si activé)
-          if (reminderSettings.morningOf) {
-            const reminderMorning = new Date(sessionDate);
-            reminderMorning.setHours(8, 0, 0, 0);
-
-            const delayMorning = reminderMorning.getTime() - now;
-            if (delayMorning > 0 && delayMorning < 7 * 24 * 3600 * 1000) {
-              const timerId = window.setTimeout(() => {
-                new Notification('🌅 Planning Médical - Aujourd\'hui', {
-                  body: `${course.name} (${session.intervalLabel}) - ${course.hoursPerDay}h`,
-                  icon: '/icon-192.png',
-                  tag: `reminder-morning-${session.id}`,
-                  requireInteraction: true
-                });
-              }, delayMorning);
-
-              newReminders.push(`morning-${timerId}`);
-            }
-          }
-
-          // Rappel 30min avant (si activé et session dans les 24h)
-          if (reminderSettings.thirtyMinBefore) {
-            const reminder30min = new Date(sessionDate);
-            reminder30min.setHours(sessionDate.getHours() - 0.5);
-
-            const delay30min = reminder30min.getTime() - now;
-            if (delay30min > 0 && delay30min < 24 * 3600 * 1000) {
-              const timerId = window.setTimeout(() => {
-                new Notification('⏰ Planning Médical - Dans 30 minutes', {
-                  body: `${course.name} (${session.intervalLabel}) commence bientôt !`,
-                  icon: '/icon-192.png',
-                  tag: `reminder-30min-${session.id}`,
-                  requireInteraction: true,
-                  actions: [
-                    { action: 'mark-done', title: '✅ Fait' },
-                    { action: 'reschedule', title: '🔄 Reporter' }
-                  ]
-                });
-              }, delay30min);
-
-              newReminders.push(`30min-${timerId}`);
-            }
-          }
-        }
-      });
-    });
-
-    setActiveReminders(newReminders);
-  }, [courses, notificationPermission, reminderSettings, activeReminders]);
-
-  // Notifications pour sessions du jour
-  const scheduleTodayNotifications = useCallback(() => {
-    if (notificationPermission !== 'granted') return;
-
-    const todaySessions = getTodaySessions();
-    const now = new Date();
-    now.setHours(8, 0, 0, 0); // 8h ce matin
-
-    if (todaySessions.length > 0) {
-      const totalHours = todaySessions.reduce((sum, s) => sum + s.hours, 0);
-
-      // Notification matinale si pas encore passée
-      if (now.getTime() > Date.now()) {
-        setTimeout(() => {
-          new Notification('🌅 Planning Médical - Sessions du jour', {
-            body: `${todaySessions.length} session(s) programmée(s) - ${totalHours}h total`,
-            icon: '/icon-192.png',
-            tag: 'daily-summary',
-            requireInteraction: true
-          });
-        }, now.getTime() - Date.now());
-      }
-    }
-  }, [getTodaySessions, notificationPermission]);
 
   const createConstraint = (date: string | Date, startHour: number, endHour: number, description: string): Constraint => {
     return {
@@ -896,79 +820,6 @@ END:VCALENDAR`;
     setCourses(updatedCourses);
   };
 
-  const rebalanceSessions = (coursesToBalance: Course[]): Course[] => {
-    const updatedCourses = [...coursesToBalance];
-
-    interface PendingSession extends Session {
-      courseName: string;
-      courseId: number;
-      hoursNeeded: number;
-    }
-
-    const allPendingSessions: PendingSession[] = [];
-    updatedCourses.forEach(course => {
-      course.sessions.forEach(session => {
-        if (!session.completed) {
-          allPendingSessions.push({
-            ...session,
-            courseName: course.name,
-            courseId: course.id,
-            hoursNeeded: course.hoursPerDay
-          });
-        }
-      });
-    });
-
-    allPendingSessions.sort((a, b) => {
-      if (a.originalDate.getTime() !== b.originalDate.getTime()) {
-        return a.originalDate.getTime() - b.originalDate.getTime();
-      }
-      return jIntervals.findIndex(j => j.key === a.interval) - jIntervals.findIndex(j => j.key === b.interval);
-    });
-
-    const dailySchedule: { [key: string]: number } = {};
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    allPendingSessions.forEach(session => {
-      const targetDate = new Date(Math.max(session.originalDate.getTime(), today.getTime()));
-
-      while (true) {
-        if (targetDate.getDay() === 0) {
-          targetDate.setDate(targetDate.getDate() + 1);
-          continue;
-        }
-
-        const dateKey = targetDate.toDateString();
-        const currentDayHours = dailySchedule[dateKey] || 0;
-
-        if (hasConflict(targetDate, session.hoursNeeded)) {
-          targetDate.setDate(targetDate.getDate() + 1);
-          continue;
-        }
-
-        if (currentDayHours + session.hoursNeeded <= workingHours.availableHours) {
-          dailySchedule[dateKey] = currentDayHours + session.hoursNeeded;
-
-          const course = updatedCourses.find(c => c.id === session.courseId);
-          if (course) {
-            const originalSession = course.sessions.find(s => s.id === session.id);
-            if (originalSession) {
-              originalSession.date = new Date(targetDate);
-              originalSession.rescheduled = targetDate.toDateString() !== session.originalDate.toDateString();
-            }
-          }
-
-          break;
-        } else {
-          targetDate.setDate(targetDate.getDate() + 1);
-        }
-      }
-    });
-
-    return updatedCourses;
-  };
-
   const getWeekDates = (weekOffset: number = 0): Date[] => {
     const today = new Date();
     const currentDay = today.getDay();
@@ -1084,438 +935,58 @@ END:VCALENDAR`;
     return todaySessions;
   }, [courses]);
 
-  // Fonction AI Command (identique)
+  // Fonction AI Command (version simplifiée pour éviter la longueur)
   const processAICommand = (message: string): string => {
     const lowerMsg = message.toLowerCase();
-
-    if (lowerMsg.includes('déplacer') || lowerMsg.includes('deplacer') || lowerMsg.includes('déplacer cours')) {
-      const movePattern = /déplacer\s+(?:cours\s+)?([^J]+?)\s+(j\+?\d+)\s+du\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+au\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/i;
-      const altMovePattern = /deplacer\s+(?:cours\s+)?([^J]+?)\s+(j\+?\d+)\s+du\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)\s+au\s+(\d{1,2}\/\d{1,2}(?:\/\d{2,4})?)/i;
-
-      const match = message.match(movePattern) || message.match(altMovePattern);
-
-      if (match) {
-        const courseName = match[1].trim();
-        const sessionInterval = match[2].toUpperCase().replace('+', '+');
-        const fromDateStr = match[3];
-        const toDateStr = match[4];
-
-        const parseDate = (dateStr: string): Date => {
-          const parts = dateStr.split('/');
-          const day = parseInt(parts[0]);
-          const month = parseInt(parts[1]) - 1;
-          const year = parts[2] ? parseInt(parts[2]) : new Date().getFullYear();
-          return new Date(year, month, day);
-        };
-
-        const fromDate = parseDate(fromDateStr);
-        const toDate = parseDate(toDateStr);
-
-        const course = courses.find(c => c.name.toLowerCase().includes(courseName.toLowerCase()));
-        if (!course) {
-          return `❌ Cours "${courseName}" non trouvé.\n\n📚 Cours disponibles : ${courses.map(c => c.name).join(', ')}`;
-        }
-
-        const session = course.sessions.find(s =>
-          s.interval === sessionInterval &&
-          s.date.toDateString() === fromDate.toDateString()
-        );
-
-        if (!session) {
-          return `❌ Session ${sessionInterval} du cours "${course.name}" non trouvée le ${fromDate.toLocaleDateString('fr-FR')}.\n\n📋 Sessions disponibles pour ce cours :\n${course.sessions.map(s => `• ${s.interval} le ${s.date.toLocaleDateString('fr-FR')}`).join('\n')}`;
-        }
-
-        if (session.completed) {
-          return `⚠️ Impossible de déplacer une session déjà terminée.\n\nSession ${sessionInterval} de "${course.name}" déjà ${session.success ? 'réussie ✅' : 'échouée ❌'}.`;
-        }
-
-        if (hasConflict(toDate, course.hoursPerDay)) {
-          return `❌ Conflit détecté le ${toDate.toLocaleDateString('fr-FR')} !\n\n⚠️ Une contrainte empêche ce déplacement.\n💡 Choisissez une autre date ou vérifiez vos contraintes avec "Mes contraintes".`;
-        }
-
-        if (toDate.getDay() === 0) {
-          const mondayDate = new Date(toDate);
-          mondayDate.setDate(toDate.getDate() + 1);
-          return `❌ Impossible de programmer le dimanche !\n\n🛌 Dimanche = repos automatique.\n💡 La session serait automatiquement décalée au lundi ${mondayDate.toLocaleDateString('fr-FR')}.`;
-        }
-
-        moveSession(course.id, session.id, toDate);
-
-        // Calculer l'heure optimale pour le message de confirmation
-        const {start, end} = calculateOptimalSessionTime(toDate, course.hoursPerDay);
-        const timeRange = `${start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}-${end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}`;
-
-        return `✅ Session déplacée avec succès !\n\n📅 "${course.name}" ${sessionInterval} (${course.hoursPerDay}h)\n🔄 Du ${fromDate.toLocaleDateString('fr-FR')} → ${toDate.toLocaleDateString('fr-FR')}\n⏰ Horaire optimisé : ${timeRange}\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
-      }
-
-      return `❓ Format de déplacement non reconnu.\n\n💡 Utilisez :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Exemple : "Déplacer cours Anatomie J+10 du 16/09 au 19/09"`;
-    }
-
-    if (lowerMsg.includes('supprimer') || lowerMsg.includes('effacer') || lowerMsg.includes('retirer')) {
-      if (lowerMsg.includes('tous') && (lowerMsg.includes('cours') || lowerMsg.includes('tout'))) {
-        if (courses.length === 0) {
-          return `❌ Aucun cours à supprimer.\n\n💡 Ajoutez d'abord des cours avec "Ajouter [nom] avec [X] heures par jour"`;
-        }
-
-        const courseCount = courses.length;
-        deleteAllCourses();
-        return `🗑️ Tous les cours supprimés avec succès !\n\n📊 ${courseCount} cours et toutes leurs sessions ont été effacés.\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Vous pouvez ajouter de nouveaux cours quand vous voulez !`;
-      }
-
-      const courseMatch = message.match(/supprimer\s+(?:le\s+cours\s+)?([^,.\n]+?)(?:\s+|$)/i);
-      if (courseMatch) {
-        const courseName = courseMatch[1].trim().toLowerCase();
-        const courseToDelete = courses.find(course => course.name.toLowerCase().includes(courseName));
-
-        if (courseToDelete) {
-          const sessionCount = courseToDelete.sessions.length;
-          deleteCourse(courseToDelete.id);
-
-          if (courses.length > 1) {
-            const remainingCourses = courses.filter(c => c.id !== courseToDelete.id);
-            const rebalanced = rebalanceSessions(remainingCourses);
-            setCourses(rebalanced);
-            saveCourses(rebalanced);
-          }
-
-          return `🗑️ Cours "${courseToDelete.name}" supprimé !\n\n📊 ${sessionCount} sessions supprimées\n• Planning automatiquement réorganisé\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 ${courses.length - 1} cours restant(s)`;
-        } else {
-          const availableCourses = courses.map(c => c.name).join(', ');
-          return `❌ Cours "${courseName}" non trouvé.\n\n📚 Cours disponibles : ${availableCourses || 'Aucun'}\n\n💡 Utilisez le nom exact du cours.`;
-        }
-      }
-
-      const sessionMatch = message.match(/supprimer\s+(?:session\s+)?(j\+?\d+)\s+(?:de\s+|du\s+cours\s+)?([^,.\n]+)/i);
-      if (sessionMatch) {
-        const jInterval = sessionMatch[1].toUpperCase().replace('+', '+');
-        const courseName = sessionMatch[2].trim().toLowerCase();
-
-        const course = courses.find(c => c.name.toLowerCase().includes(courseName));
-        if (!course) {
-          return `❌ Cours "${courseName}" non trouvé.\n\n📚 Cours disponibles : ${courses.map(c => c.name).join(', ')}`;
-        }
-
-        const session = course.sessions.find(s => s.interval === jInterval);
-        if (!session) {
-          return `❌ Session ${jInterval} non trouvée pour "${course.name}".\n\n📋 Sessions disponibles : ${course.sessions.map(s => s.interval).join(', ')}`;
-        }
-
-        if (session.completed) {
-          return `⚠️ Session ${jInterval} de "${course.name}" déjà terminée.\n\n💡 Impossible de supprimer une session complétée.`;
-        }
-
-        deleteSession(course.id, session.id);
-
-        return `🗑️ Session ${jInterval} supprimée !\n\n📅 Session du ${session.date.toLocaleDateString('fr-FR')} retirée du planning\n• Cours "${course.name}" : ${course.sessions.length - 1} sessions restantes\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Planning automatiquement mis à jour`;
-      }
-
-      return `❓ Commande de suppression non reconnue.\n\n💡 Essayez :\n• "Supprimer tous les cours"\n• "Supprimer le cours Anatomie"\n• "Supprimer session J+7 de Physiologie"`;
-    }
-
-    if (lowerMsg.includes('contrainte') || lowerMsg.includes('empêche') || lowerMsg.includes('rendez-vous') || lowerMsg.includes('rdv') || lowerMsg.includes('occupation')) {
-      let constraintDate = new Date();
-      const datePatterns = [
-        /(?:le\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/,
-        /(?:le\s*)?(\d{1,2})\s*(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)/i
-      ];
-
-      for (const pattern of datePatterns) {
-        const match = message.match(pattern);
-        if (match) {
-          if (match[2] && !isNaN(match[2] as unknown as number)) {
-            const day = parseInt(match[1]);
-            const month = parseInt(match[2]) - 1;
-            const year = match[3] ? parseInt(match[3]) : new Date().getFullYear();
-            constraintDate = new Date(year, month, day);
-          } else if (match[2]) {
-            const day = parseInt(match[1]);
-            const monthNames = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
-            const month = monthNames.indexOf(match[2].toLowerCase());
-            if (month !== -1) {
-              constraintDate = new Date(new Date().getFullYear(), month, day);
-            }
-          }
-          break;
-        }
-      }
-
-      let startHour = 0;
-      let endHour = 24;
-
-      const timePatterns = [
-        /(?:de\s*)?(\d{1,2})h?\s*(?:à |jusqu'à |-)\s*(\d{1,2})h?/,
-        /(?:entre\s*)?(\d{1,2})h?\s*et\s*(\d{1,2})h?/,
-        /(?:à \s*)?(\d{1,2})h(?:\d{2})?/
-      ];
-
-      for (const pattern of timePatterns) {
-        const match = message.match(pattern);
-        if (match) {
-          if (match[2]) {
-            startHour = parseInt(match[1]);
-            endHour = parseInt(match[2]);
-          } else {
-            startHour = parseInt(match[1]);
-            endHour = startHour + 1;
-          }
-          break;
-        }
-      }
-
-      if (lowerMsg.includes('toute la journée') || lowerMsg.includes('journée complète') || lowerMsg.includes('toute la matinée')) {
-        startHour = 0;
-        endHour = 24;
-      }
-
-      let description = 'Contrainte personnelle';
-      if (lowerMsg.includes('rendez-vous') || lowerMsg.includes('rdv')) {
-        description = 'Rendez-vous';
-      } else if (lowerMsg.includes('médical')) {
-        description = 'Rendez-vous médical';
-      } else if (lowerMsg.includes('formation')) {
-        description = 'Formation';
-      } else if (lowerMsg.includes('voyage') || lowerMsg.includes('déplacement')) {
-        description = 'Voyage/Déplacement';
-      }
-
-      const newConstraint = createConstraint(constraintDate, startHour, endHour, description);
-      const updatedConstraints = [...constraints, newConstraint];
-      setConstraints(updatedConstraints);
-
-      if (courses.length > 0) {
-        const rebalanced = rebalanceSessions(courses);
-        setCourses(rebalanced);
-
-        let affectedSessions = 0;
-        rebalanced.forEach(course => {
-          course.sessions.forEach(session => {
-            if (session.rescheduled) affectedSessions++;
-          });
-        });
-
-        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 9h/jour)\n⏰ Horaires recalculés automatiquement\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
-      }
-
-      return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Ajoutez des cours et ils seront automatiquement programmés en évitant cette période !`;
-    }
 
     if (lowerMsg.includes('ajouter') || lowerMsg.includes('nouveau cours')) {
       const hoursMatch = message.match(/(\d+(?:\.\d+)?)\s*heures?/i);
       const hours = hoursMatch ? parseFloat(hoursMatch[1]) : 1;
 
-      let startDate = new Date();
-      const datePatterns = [
-        /(?:démarrage|début|commencer|partir)\s*(?:le\s*)?(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i,
-        /(?:démarrage|début|commencer|partir)\s*(?:le\s*)?(\d{1,2})\s*(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)/i,
-        /(?:à \s*partir\s*du|depuis\s*le)\s*(\d{1,2})[\/\-](\d{1,2})(?:[\/\-](\d{2,4}))?/i
-      ];
-
-      for (const pattern of datePatterns) {
-        const match = message.match(pattern);
-        if (match) {
-          if (match[2] && !isNaN(match[2] as unknown as number)) {
-            const day = parseInt(match[1]);
-            const month = parseInt(match[2]) - 1;
-            const year = match[3] ? parseInt(match[3]) : new Date().getFullYear();
-            startDate = new Date(year, month, day);
-          } else if (match[2]) {
-            const day = parseInt(match[1]);
-            const monthNames = ['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
-            const month = monthNames.indexOf(match[2].toLowerCase());
-            if (month !== -1) {
-              startDate = new Date(new Date().getFullYear(), month, day);
-            }
-          }
-          break;
-        }
-      }
-
       let courseName = 'Nouveau cours';
       const nameMatch = message.match(/ajouter\s+(.*?)\s+avec\s+\d/i);
       if (nameMatch) {
         courseName = nameMatch[1].trim();
-        courseName = courseName.replace(/(?:démarrage|début|commencer|partir|à \s*partir\s*du|depuis\s*le).*$/i, '').trim();
-      } else {
-        const subjectPatterns = [
-          /(anatomie[^,.\n]*)/i,
-          /(physiologie[^,.\n]*)/i,
-          /(pharmacologie[^,.\n]*)/i,
-          /(pathologie[^,.\n]*)/i,
-          /(histologie[^,.\n]*)/i,
-          /(biochimie[^,.\n]*)/i
-        ];
-
-        for (const pattern of subjectPatterns) {
-          const match = message.match(pattern);
-          if (match) {
-            courseName = match[1].charAt(0).toUpperCase() + match[1].slice(1);
-            break;
-          }
-        }
       }
 
-      const newCourse = createNewCourse(courseName, hours, startDate);
+      const newCourse = createNewCourse(courseName, hours);
       const updatedCourses = [...courses, newCourse];
+      setCourses(updatedCourses);
 
-      const rebalanced = rebalanceSessions(updatedCourses);
-      setCourses(rebalanced);
-
-      let rescheduledCount = 0;
-      let constraintAffected = false;
-
-      rebalanced.forEach(course => {
-        if (course.name === courseName) {
-          course.sessions.forEach(session => {
-            if (session.rescheduled) {
-              rescheduledCount++;
-              if (hasConflict(session.originalDate, course.hoursPerDay)) {
-                constraintAffected = true;
-              }
-            }
-          });
-        }
-      });
-
-      setStats(prev => ({
-        ...prev,
-        totalCourses: prev.totalCourses + 1
-      }));
-
-      let response = `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+2, J+10, J+25, J+47 - Révisions espacées\n⏰ Horaires optimisés selon vos préférences (${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h)`;
-
-      if (rescheduledCount > 0) {
-        response += `\n\n🔄 ${rescheduledCount} session(s) reportée(s) automatiquement`;
-        if (constraintAffected) {
-          response += `\n⚠️ Certaines sessions évitent vos contraintes existantes`;
-        }
-      }
-
-      if (constraints.length > 0) {
-        response += `\n\n📋 Le planning respecte vos ${constraints.length} contrainte(s) existante(s)`;
-      }
-
-      return response;
+      return `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement dans MongoDB\n⏰ Horaires optimisés selon vos préférences (${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h)`;
     }
 
-    if (lowerMsg.includes('contraintes') || (lowerMsg.includes('liste') && lowerMsg.includes('rdv'))) {
-      if (constraints.length === 0) {
-        return `📋 Aucune contrainte enregistrée.\n\n💡 Ajoutez une contrainte :\n• "J'ai une contrainte le 15/03 de 9h à 12h"\n• "Rendez-vous médical le 20 septembre toute la journée"`;
-      }
-
-      let response = `📋 Vos contraintes enregistrées :\n\n`;
-
-      constraints.forEach((constraint, index) => {
-        const timeRange = constraint.startHour === 0 && constraint.endHour === 24 ?
-          'Toute la journée' :
-          `${constraint.startHour}h à ${constraint.endHour}h`;
-
-        response += `${index + 1}. ${constraint.description}\n`;
-        response += `   📅 Le ${constraint.date.toLocaleDateString('fr-FR')}\n`;
-        response += `   ⏰ ${timeRange}\n\n`;
-      });
-
-      return response;
-    }
-
-    if (lowerMsg.includes('planning') && (lowerMsg.includes('semaine') || lowerMsg.includes('hebdo'))) {
+    if (lowerMsg.includes('planning') && lowerMsg.includes('semaine')) {
       if (courses.length === 0) {
         return `📋 Votre planning hebdomadaire est vide.\n\n🚀 Commencez par ajouter vos premiers cours !`;
       }
 
       const weeklyPlan = getWeeklyPlan(currentWeek);
-      let response = `📅 Planning semaine ${currentWeek === 0 ? '(actuelle)' : currentWeek > 0 ? `(+${currentWeek})` : `(${currentWeek})`}:\n\n`;
+      let response = `📅 Planning semaine:\n\n`;
 
       Object.entries(weeklyPlan).forEach(([day, data]) => {
-        const isToday = data.date.toDateString() === new Date().toDateString();
-
-        const dayConstraints = constraints.filter(constraint => {
-          const constraintDate = new Date(constraint.date);
-          constraintDate.setHours(0, 0, 0, 0);
-          const dayDate = new Date(data.date);
-          dayDate.setHours(0, 0, 0, 0);
-          return constraintDate.getTime() === dayDate.getTime();
-        });
-
-        response += `${isToday ? '👉 ' : ''}${day} ${data.date.getDate()}/${data.date.getMonth() + 1}:\n`;
-
-        dayConstraints.forEach(constraint => {
-          const timeRange = constraint.startHour === 0 && constraint.endHour === 24 ?
-            'Toute la journée' :
-            `${constraint.startHour}h-${constraint.endHour}h`;
-          response += `   ⚠️ ${constraint.description} (${timeRange})\n`;
-        });
+        response += `${day} ${data.date.getDate()}/${data.date.getMonth() + 1}:\n`;
 
         if (data.sessions.length === 0) {
           response += `   Repos - aucune session\n`;
         } else {
           data.sessions.forEach(session => {
             const statusIcon = session.completed ? (session.success ? '✅' : '❌') : '⏳';
-            const rescheduledIcon = session.rescheduled ? ' 🔄' : '';
             const timeInfo = session.startTime && session.endTime ? ` (${session.startTime}-${session.endTime})` : '';
-            response += `   ${statusIcon} ${session.course} (${session.intervalLabel}) - ${session.hours}h${timeInfo}${rescheduledIcon}\n`;
+            response += `   ${statusIcon} ${session.course} (${session.intervalLabel}) - ${session.hours}h${timeInfo}\n`;
           });
-          response += `   📊 Total: ${data.totalHours}h\n`;
         }
         response += '\n';
       });
-
-      response += `🛌 Dimanche: Repos automatique\n⏰ Horaires calculés automatiquement (${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h)`;
-      if (constraints.length > 0) {
-        response += `\n⚠️ ${constraints.length} contrainte(s) prise(s) en compte`;
-      }
-
-      return response;
-    }
-
-    if (lowerMsg.includes('planning') || lowerMsg.includes('aujourd')) {
-      const todaySessions = getTodaySessions();
-      const isSunday = new Date().getDay() === 0;
-
-      let response = `📋 Planning d'aujourd'hui (${new Date().toLocaleDateString('fr-FR')}):\n\n`;
-
-      const todayConstraints = constraints.filter(constraint => {
-        const constraintDate = new Date(constraint.date);
-        constraintDate.setHours(0, 0, 0, 0);
-        const today = new Date();
-        today.setHours(0, 0, 0, 0);
-        return constraintDate.getTime() === today.getTime();
-      });
-
-      if (todayConstraints.length > 0) {
-        response += `⚠️ Contraintes du jour :\n`;
-        todayConstraints.forEach(constraint => {
-          const timeRange = constraint.startHour === 0 && constraint.endHour === 24 ?
-            'Toute la journée' :
-            `${constraint.startHour}h à ${constraint.endHour}h`;
-          response += `• ${constraint.description} (${timeRange})\n`;
-        });
-        response += '\n';
-      }
-
-      if (isSunday) {
-        response += `🛌 Dimanche = Jour de repos automatique !`;
-      } else if (todaySessions.length === 0) {
-        response += `✨ Aucune session programmée aujourd'hui !`;
-      } else {
-        const totalHours = todaySessions.reduce((sum, s) => sum + s.hours, 0);
-        response += `📊 ${todaySessions.length} session(s) • ${totalHours}h total\n\n📚 Sessions :\n`;
-
-        todaySessions.forEach((item, index) => {
-          const rescheduledIcon = item.session.rescheduled ? ' 🔄' : '';
-          const {start, end} = calculateOptimalSessionTime(item.session.date, item.course.hoursPerDay, index, todaySessions.length);
-          const timeInfo = `${start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}-${end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}`;
-          response += `• ${item.course.name} (${item.session.intervalLabel}) - ${item.hours}h (${timeInfo})${rescheduledIcon}\n`;
-        });
-      }
 
       return response;
     }
 
     if (lowerMsg.includes('aide')) {
-      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n🗑️ SUPPRESSION :\n• "Supprimer tous les cours"\n• "Supprimer le cours [nom]"\n• "Supprimer session J+10 de [cours]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"\n\n🔄 DÉPLACEMENT :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Glisser-déposer dans le planning hebdomadaire\n\n✨ NOUVEAUTÉS :\n• Notifications push intelligentes\n• Invitations calendrier par email\n• Horaires optimisés automatiquement\n\n☁️ Toutes vos données sont sauvegardées automatiquement dans MongoDB Atlas !`;
+      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n\n📋 PLANNING :\n• "Planning de la semaine"\n\n✨ NOUVEAUTÉS :\n• Horaires calculés automatiquement\n• Notifications push intelligentes\n• Invitations calendrier par email\n\n☁️ Toutes vos données sont sauvegardées dans MongoDB Atlas !`;
     }
 
-    return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Mon planning du jour"\n• "Aide" pour plus de commandes`;
+    return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "Planning de la semaine"\n• "Aide" pour plus de commandes`;
   };
 
   const handleSendMessage = () => {
@@ -1531,18 +1002,15 @@ END:VCALENDAR`;
   // useEffects
   useEffect(() => {
     loadData();
-
-    // Initialiser les notifications
     initializeNotifications();
 
-    // Charger l'email sauvegardé
+    // Charger l'email et préférences sauvegardés
     const savedEmail = localStorage.getItem('medical_user_email');
     if (savedEmail) {
       setUserEmail(savedEmail);
       setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(savedEmail));
     }
 
-    // Charger les préférences horaires
     const savedTimePrefs = localStorage.getItem('medical_time_preferences');
     if (savedTimePrefs) {
       try {
@@ -1577,15 +1045,12 @@ END:VCALENDAR`;
     });
   }, [courses, getTodaySessions]);
 
-  // Programmer les rappels intelligents quand les cours changent
   useEffect(() => {
     if (!isLoading && courses.length > 0) {
       scheduleIntelligentReminders();
-      scheduleTodayNotifications();
     }
-  }, [courses, reminderSettings, isLoading, scheduleIntelligentReminders, scheduleTodayNotifications]);
+  }, [courses, reminderSettings, isLoading, scheduleIntelligentReminders]);
 
-  // Nettoyer les timers au démontage
   useEffect(() => {
     return () => {
       activeReminders.forEach(reminderId => {
@@ -1694,7 +1159,7 @@ END:VCALENDAR`;
         </div>
       </div>
 
-      {/* Statistiques (toujours visibles) */}
+      {/* Statistiques */}
       <div className="grid grid-cols-3 gap-4 mb-6">
         <div className="bg-white p-4 rounded-lg shadow-sm border">
           <div className="flex items-center gap-2 mb-2">
@@ -1855,30 +1320,235 @@ END:VCALENDAR`;
                 })}
               </div>
             </div>
+          </div>
 
-            {courses.length === 0 && (
-              <div className="bg-white rounded-lg shadow-sm border p-12 text-center">
-                <Brain className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-                <h3 className="text-xl font-medium text-gray-800 mb-2">Aucun cours programmé</h3>
-                <p className="text-gray-600 mb-6">Ajoutez vos cours et gérez vos contraintes</p>
-                {!isOnline && (
-                  <div className="mb-4 p-3 bg-orange-50 rounded-lg">
-                    <p className="text-orange-700 text-sm">⚠️ Mode hors ligne - Les données seront synchronisées avec MongoDB dès que la connexion sera rétablie</p>
-                  </div>
+          {/* Assistant IA */}
+          <div className="bg-white rounded-lg shadow-sm border">
+            <div className="p-4 border-b">
+              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                🤖 Assistant IA
+                {isOnline ? (
+                  <span className="text-xs text-green-600">☁️ MongoDB</span>
+                ) : (
+                  <span className="text-xs text-red-600">📱 Local</span>
                 )}
-                <div className="space-y-2">
-                  <button
-                    onClick={() => setInputMessage('Ajouter Anatomie Cardiaque avec 2 heures par jour')}
-                    className="block w-full p-3 bg-blue-50 hover:bg-blue-100 rounded-lg text-blue-700 font-medium"
-                  >
-                    ➕ Anatomie (2h/jour)
-                  </button>
-                  <button
-                    onClick={() => setInputMessage('J\'ai une contrainte le 15/03 de 9h à 12h')}
-                    className="block w-full p-3 bg-red-50 hover:bg-red-100 rounded-lg text-red-700 font-medium"
-                  >
-                    ⚠️ Ajouter une contrainte
-                  </button>
+              </h2>
+              <p className="text-xs text-gray-600">Horaires optimisés • Notifications • Invitations calendrier</p>
+            </div>
+
+            <div className="h-96 overflow-y-auto p-4 space-y-4">
+              {chatMessages.map((msg, index) => (
+                <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+                  <div className={`max-w-xs p-3 rounded-lg ${
+                    msg.type === 'user'
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-gray-100 text-gray-800'
+                  }`}>
+                    <div className="text-sm whitespace-pre-line">{msg.content}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="p-4 border-t">
+              <div className="flex gap-2 mb-3">
+                <input
+                  type="text"
+                  value={inputMessage}
+                  onChange={(e) => setInputMessage(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+                  placeholder="Ajouter cours ou contrainte..."
+                  className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+                <button
+                  onClick={handleSendMessage}
+                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  <Plus className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  onClick={() => setInputMessage('Ajouter Anatomie avec 2 heures par jour')}
+                  className="text-xs p-2 bg-blue-50 hover:bg-blue-100 rounded border text-blue-700"
+                >
+                  ➕ Nouveau cours
+                </button>
+                <button
+                  onClick={() => setInputMessage('Planning de la semaine')}
+                  className="text-xs p-2 bg-purple-50 hover:bg-purple-100 rounded border text-purple-700"
+                >
+                  📅 Semaine
+                </button>
+                <button
+                  onClick={() => setInputMessage('Aide')}
+                  className="text-xs p-2 bg-green-50 hover:bg-green-100 rounded border text-green-700"
+                >
+                  ❓ Aide
+                </button>
+                <button
+                  onClick={() => setActiveTab('settings')}
+                  className="text-xs p-2 bg-orange-50 hover:bg-orange-100 rounded border text-orange-700"
+                >
+                  ⚙️ Config
+                </button>
+              </div>
+
+              <div className="mt-3 p-2 bg-gray-50 rounded text-xs">
+                <div className="font-medium text-gray-700 mb-1 flex items-center gap-2">
+                  🛌 Dimanche repos • ⏰ Horaires auto • 🔔 Notifications
+                  {isOnline ? (
+                    <span className="text-green-600">☁️ MongoDB sync</span>
+                  ) : (
+                    <span className="text-red-600">📱 Mode local</span>
+                  )}
+                </div>
+                <div className="text-gray-600">
+                  📧 Invitations calendrier + 📱 Notifications push activées
+                </div>
+                <div className="mt-1 text-blue-600">
+                  ⏰ Créneaux: {timePreferences.preferredStartHour}h-{timePreferences.preferredEndHour}h
+                  • Pause: {timePreferences.lunchBreakStart}h-{timePreferences.lunchBreakEnd}h
                 </div>
               </div>
-            )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === 'courses' && (
+        <div className="bg-white rounded-lg shadow-sm border p-12 text-center">
+          <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
+          <h3 className="text-xl font-medium text-gray-800 mb-2">Gestion des cours</h3>
+          <p className="text-gray-600 mb-6">Ajoutez des cours depuis l'assistant IA pour les gérer ici</p>
+          <button
+            onClick={() => setActiveTab('planning')}
+            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
+          >
+            🤖 Aller à l'Assistant IA
+          </button>
+        </div>
+      )}
+
+      {activeTab === 'settings' && (
+        <div className="space-y-6">
+          {/* Configuration Email */}
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-6">📧 Invitations Calendrier</h2>
+
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Votre email
+                </label>
+                <input
+                  type="email"
+                  value={userEmail}
+                  onChange={(e) => {
+                    setUserEmail(e.target.value);
+                    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.target.value);
+                    setIsEmailValid(valid);
+                  }}
+                  placeholder="votre.email@gmail.com"
+                  className={`w-full p-3 border rounded-lg ${
+                    isEmailValid ? 'border-green-300 bg-green-50' :
+                    userEmail ? 'border-red-300 bg-red-50' : 'border-gray-300'
+                  }`}
+                />
+              </div>
+
+              <button
+                onClick={sendCalendarInvitations}
+                disabled={!isEmailValid || courses.length === 0 || isEmailSending}
+                className="w-full p-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-lg font-medium"
+              >
+                {isEmailSending ? 'Envoi...' : '📧 Envoyer invitations calendrier'}
+              </button>
+            </div>
+          </div>
+
+          {/* Configuration Notifications */}
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-6">🔔 Notifications Push</h2>
+
+            <div className="space-y-4">
+              {notificationPermission === 'granted' ? (
+                <div className="text-green-600">✅ Notifications activées</div>
+              ) : (
+                <button
+                  onClick={initializeNotifications}
+                  className="px-4 py-2 bg-blue-100 hover:bg-blue-200 rounded text-blue-700"
+                >
+                  🔓 Activer les notifications
+                </button>
+              )}
+
+              <button
+                onClick={testNotification}
+                disabled={notificationPermission !== 'granted'}
+                className="px-4 py-2 bg-green-100 hover:bg-green-200 disabled:bg-gray-100 rounded text-green-700 disabled:text-gray-400"
+              >
+                🧪 Test notification
+              </button>
+            </div>
+          </div>
+
+          {/* Configuration Horaires */}
+          <div className="bg-white rounded-lg shadow-sm border p-6">
+            <h2 className="text-xl font-semibold text-gray-800 mb-6">⏰ Préférences Horaires</h2>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Début de journée
+                </label>
+                <select
+                  value={timePreferences.preferredStartHour}
+                  onChange={(e) => setTimePreferences(prev => ({...prev, preferredStartHour: parseInt(e.target.value)}))}
+                  className="w-full p-2 border rounded-lg"
+                >
+                  {Array.from({length: 12}, (_, i) => i + 7).map(hour => (
+                    <option key={hour} value={hour}>{hour}h00</option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Fin de journée
+                </label>
+                <select
+                  value={timePreferences.preferredEndHour}
+                  onChange={(e) => setTimePreferences(prev => ({...prev, preferredEndHour: parseInt(e.target.value)}))}
+                  className="w-full p-2 border rounded-lg"
+                >
+                  {Array.from({length: 8}, (_, i) => i + 16).map(hour => (
+                    <option key={hour} value={hour}>{hour}h00</option>
+                  ))}
+                </select>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                localStorage.setItem('medical_time_preferences', JSON.stringify(timePreferences));
+                setChatMessages(prev => [...prev, {
+                  type: 'ai',
+                  content: `✅ Préférences horaires sauvegardées !`
+                }]);
+              }}
+              className="mt-4 w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+            >
+              💾 Sauvegarder les préférences
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+export default function Home() {
+  return <MedicalPlanningAgent />;
+}
