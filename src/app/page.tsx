@@ -1258,12 +1258,12 @@ const MedicalPlanningAgent = () => {
         <div className="bg-white rounded-lg shadow-sm border p-12 text-center">
           <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
           <h3 className="text-xl font-medium text-gray-800 mb-2">Gestion des cours</h3>
-          <p className="text-gray-600 mb-6">Ajoutez des cours depuis l'assistant IA pour les gérer ici</p>
+          <p className="text-gray-600 mb-6">Ajoutez des cours depuis l assistant IA pour les gérer ici</p>
           <button
             onClick={() => setActiveTab('planning')}
             className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
           >
-            🤖 Aller à l'Assistant IA
+            🤖 Aller à l Assistant IA
           </button>
         </div>
       )}
