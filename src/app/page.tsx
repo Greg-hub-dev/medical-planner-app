@@ -282,7 +282,7 @@ const MedicalPlanningAgent = () => {
 
     try {
       // Préparer les sessions futures non complétées
-      const upcomingSessions = [];
+      const upcomingSessions: { session: Session; course: Course }[] = [];
       courses.forEach(course => {
         course.sessions.forEach(session => {
           if (!session.completed && session.date >= new Date()) {
