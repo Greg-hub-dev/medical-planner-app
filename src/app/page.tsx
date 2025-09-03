@@ -76,6 +76,8 @@ interface WeeklyPlanSession {
   success: boolean | null;
   color: string;
   rescheduled: boolean;
+  startTime?: string; // NOUVEAU : heure de début
+  endTime?: string;   // NOUVEAU : heure de fin
 }
 
 interface DayPlan {
@@ -110,7 +112,7 @@ const MedicalPlanningAgent = () => {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
     {
       type: 'ai',
-      content: '🎓 Bonjour ! Je suis votre agent de planning médical.\n\n📅 Planning: Lundi-Samedi • Dimanche = Repos automatique\n\n💡 Formats disponibles:\n• "Ajouter Anatomie avec 2 heures par jour"\n• "Ajouter Physiologie avec 1.5h démarrage le 15/03"\n• "J\'ai une contrainte le 20/03 de 9h à 12h"\n• "Déplacer cours Anatomie J+10 du 16/09 au 19/09"\n\n🔄 Nouveaux intervalles J : J0, J+1, J+2, J+10, J+25, J+47\n🎯 Glisser-déposer activé dans le planning !\n☁️ Sauvegarde automatique MongoDB Atlas'
+      content: '🎓 Bonjour ! Je suis votre agent de planning médical.\n\n📅 Planning: Lundi-Samedi • Dimanche = Repos automatique\n\n💡 Formats disponibles:\n• "Ajouter Anatomie avec 2 heures par jour"\n• "Ajouter Physiologie avec 1.5h démarrage le 15/03"\n• "J\'ai une contrainte le 20/03 de 9h à 12h"\n• "Déplacer cours Anatomie J+10 du 16/09 au 19/09"\n\n🔄 Nouveaux intervalles J : J0, J+1, J+2, J+10, J+25, J+47\n🎯 Glisser-déposer activé dans le planning !\n☁️ Sauvegarde automatique MongoDB Atlas\n\n✨ NOUVEAU : Notifications push + Invitations calendrier avec horaires intelligents !'
     }
   ]);
   const [inputMessage, setInputMessage] = useState<string>('');
@@ -126,6 +128,29 @@ const MedicalPlanningAgent = () => {
 
   // Nouvel état pour les onglets
   const [activeTab, setActiveTab] = useState<'planning' | 'courses' | 'settings'>('planning');
+
+  // États pour les nouvelles fonctionnalités
+  const [userEmail, setUserEmail] = useState<string>('');
+  const [isEmailValid, setIsEmailValid] = useState<boolean>(false);
+  const [notificationPermission, setNotificationPermission] = useState<string>('default');
+  const [reminderSettings, setReminderSettings] = useState({
+    beforeDay: true,
+    morningOf: true,
+    thirtyMinBefore: true,
+    weeklyDigest: true
+  });
+  const [activeReminders, setActiveReminders] = useState<string[]>([]);
+  const [isEmailSending, setIsEmailSending] = useState<boolean>(false);
+
+  // Paramètres de créneaux horaires
+  const [timePreferences, setTimePreferences] = useState({
+    preferredStartHour: 9,
+    preferredEndHour: 18,
+    lunchBreakStart: 13,
+    lunchBreakEnd: 14,
+    allowWeekends: false,
+    distributeEvenly: true
+  });
 
   const handleDragStart = (e: React.DragEvent, courseId: number, sessionId: string, courseName: string, interval: string, hours: number) => {
     setDraggedSession({ courseId, sessionId, courseName, interval, hours });
@@ -316,7 +341,7 @@ const MedicalPlanningAgent = () => {
 
         setChatMessages(prev => [...prev, {
           type: 'ai',
-          content: `☁️ Données synchronisées avec MongoDB Atlas !\n\n✅ ${coursesData.courses?.length || 0} cours récupérés\n✅ ${constraintsData.constraints?.length || 0} contraintes récupérées\n\n🔄 Synchronisation automatique activée`
+          content: `☁️ Données synchronisées avec MongoDB Atlas !\n\n✅ ${coursesData.courses?.length || 0} cours récupérés\n✅ ${constraintsData.constraints?.length || 0} contraintes récupérées\n\n🔄 Synchronisation automatique activée\n📧 Invitations calendrier prêtes !`
         }]);
 
       } else {
@@ -367,6 +392,350 @@ const MedicalPlanningAgent = () => {
       setIsLoading(false);
     }
   }, []);
+
+  // ===== NOUVELLES FONCTIONNALITÉS =====
+
+  // Système de notifications push
+  const initializeNotifications = useCallback(async () => {
+    if ('Notification' in window && 'serviceWorker' in navigator) {
+      const permission = await Notification.requestPermission();
+      setNotificationPermission(permission);
+
+      if (permission === 'granted') {
+        // Enregistrer le service worker
+        navigator.serviceWorker.register('/sw.js').catch(console.error);
+      }
+    }
+  }, []);
+
+  const testNotification = () => {
+    if (notificationPermission === 'granted') {
+      new Notification('🎯 Test Planning Médical', {
+        body: 'Les notifications fonctionnent parfaitement !',
+        icon: '/icon-192.png',
+        tag: 'test-notification'
+      });
+    }
+  };
+
+  // Fonction pour calculer l'heure optimale d'une session
+  const calculateOptimalSessionTime = (sessionDate: Date, duration: number, sessionIndex: number = 0, totalSessionsThisDay: number = 1): {start: Date, end: Date} => {
+    const { preferredStartHour, preferredEndHour, lunchBreakStart, lunchBreakEnd, distributeEvenly } = timePreferences;
+
+    // Récupérer les sessions déjà programmées ce jour
+    const sameDaySessions = courses.flatMap(course =>
+      course.sessions.filter(session =>
+        !session.completed &&
+        session.date.toDateString() === sessionDate.toDateString()
+      ).map(session => ({
+        start: session.date.getHours() || preferredStartHour,
+        duration: course.hoursPerDay
+      }))
+    );
+
+    // Créneaux occupés (incluant pause déjeuner)
+    const occupiedSlots: {start: number, end: number}[] = [
+      { start: lunchBreakStart, end: lunchBreakEnd }, // Pause déjeuner
+      ...sameDaySessions.map(session => ({
+        start: session.start,
+        end: session.start + session.duration
+      }))
+    ];
+
+    // Trouver le meilleur créneau libre
+    let bestStart = preferredStartHour;
+
+    if (distributeEvenly && totalSessionsThisDay > 1) {
+      // Distribution équilibrée dans la journée
+      const availableHours = (preferredEndHour - preferredStartHour) - (lunchBreakEnd - lunchBreakStart);
+      const slotSize = availableHours / totalSessionsThisDay;
+      bestStart = preferredStartHour + (sessionIndex * slotSize);
+
+      // Éviter la pause déjeuner
+      if (bestStart >= lunchBreakStart - 0.5 && bestStart < lunchBreakEnd) {
+        bestStart = lunchBreakEnd;
+      }
+    } else {
+      // Recherche du premier créneau libre
+      for (let hour = preferredStartHour; hour <= preferredEndHour - duration; hour += 0.5) {
+        const wouldConflict = occupiedSlots.some(slot =>
+          !(hour + duration <= slot.start || hour >= slot.end)
+        );
+
+        if (!wouldConflict) {
+          bestStart = hour;
+          break;
+        }
+      }
+    }
+
+    // Vérifier les contraintes utilisateur
+    const sessionConstraints = constraints.filter(constraint => {
+      const constraintDate = new Date(constraint.date);
+      constraintDate.setHours(0, 0, 0, 0);
+      const checkDate = new Date(sessionDate);
+      checkDate.setHours(0, 0, 0, 0);
+      return constraintDate.getTime() === checkDate.getTime();
+    });
+
+    // Éviter les contraintes
+    sessionConstraints.forEach(constraint => {
+      if (bestStart < constraint.endHour && bestStart + duration > constraint.startHour) {
+        // Conflit détecté, décaler après la contrainte
+        bestStart = Math.max(bestStart, constraint.endHour);
+      }
+    });
+
+    // S'assurer que ça ne dépasse pas les heures de fin
+    if (bestStart + duration > preferredEndHour) {
+      bestStart = preferredEndHour - duration;
+    }
+
+    // Créer les objets Date
+    const startTime = new Date(sessionDate);
+    const minutes = (bestStart % 1) * 60;
+    startTime.setHours(Math.floor(bestStart), minutes, 0, 0);
+
+    const endTime = new Date(startTime);
+    endTime.setHours(startTime.getHours() + Math.floor(duration), startTime.getMinutes() + ((duration % 1) * 60));
+
+    return { start: startTime, end: endTime };
+  };
+
+  // Génération fichiers .ics pour email (version améliorée)
+  const generateICSContent = (session: Session, course: Course, userEmail: string): string => {
+    const { start: startTime, end: endTime } = calculateOptimalSessionTime(session.date, course.hoursPerDay);
+
+    const formatDate = (date: Date) =>
+      date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+    return `BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Planning Médical//FR
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:${session.id}@medical-planner.com
+DTSTAMP:${formatDate(new Date())}
+DTSTART:${formatDate(startTime)}
+DTEND:${formatDate(endTime)}
+SUMMARY:📚 ${course.name} (${session.intervalLabel})
+DESCRIPTION:Session de révision - Méthode des J\\n\\nDurée: ${course.hoursPerDay}h\\nIntervalle: ${session.intervalLabel}\\n\\nHoraire optimisé selon vos préférences\\n\\nGénéré par Planning Médical IA
+LOCATION:Bureau/Bibliothèque
+ORGANIZER:MAILTO:planning@medical-ia.com
+ATTENDEE:MAILTO:${userEmail}
+STATUS:CONFIRMED
+SEQUENCE:0
+BEGIN:VALARM
+TRIGGER:-PT30M
+ACTION:DISPLAY
+DESCRIPTION:Session dans 30 minutes
+END:VALARM
+BEGIN:VALARM
+TRIGGER:-PT1H
+ACTION:EMAIL
+DESCRIPTION:Session dans 1 heure
+ATTENDEE:MAILTO:${userEmail}
+END:VALARM
+END:VEVENT
+END:VCALENDAR`;
+  };
+
+  // Envoi invitations email calendrier
+  const sendCalendarInvitations = async () => {
+    if (!isEmailValid) {
+      setChatMessages(prev => [...prev, {
+        type: 'ai',
+        content: '❌ Veuillez saisir un email valide pour recevoir les invitations calendrier.'
+      }]);
+      return;
+    }
+
+    setIsEmailSending(true);
+
+    try {
+      // Préparer les sessions futures non complétées
+      const upcomingSessions = [];
+      courses.forEach(course => {
+        course.sessions.forEach(session => {
+          if (!session.completed && session.date >= new Date()) {
+            upcomingSessions.push({ session, course });
+          }
+        });
+      });
+
+      if (upcomingSessions.length === 0) {
+        setChatMessages(prev => [...prev, {
+          type: 'ai',
+          content: '⚠️ Aucune session future à envoyer. Ajoutez des cours ou toutes les sessions sont terminées.'
+        }]);
+        setIsEmailSending(false);
+        return;
+      }
+
+      // Envoyer via l'API
+      const response = await fetch('/api/send-invitations', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userEmail: userEmail,
+          timePreferences: timePreferences, // Inclure les préférences horaires
+          sessions: upcomingSessions.map(({ session, course }) => ({
+            session: {
+              id: session.id,
+              date: session.date.toISOString(),
+              interval: session.interval,
+              intervalLabel: session.intervalLabel
+            },
+            course: {
+              name: course.name,
+              hoursPerDay: course.hoursPerDay
+            }
+          }))
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Erreur API');
+      }
+
+      const result = await response.json();
+      const totalSent = result.sessionsCount;
+
+      setChatMessages(prev => [...prev, {
+        type: 'ai',
+        content: `✅ Invitations calendrier envoyées avec succès !\n\n📧 ${totalSent} sessions envoyées à ${userEmail}\n⏰ Horaires calculés automatiquement :\n  • Créneaux : ${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h\n  • Pause déjeuner : ${timePreferences.lunchBreakStart}h-${timePreferences.lunchBreakEnd}h\n  • Distribution : ${timePreferences.distributeEvenly ? 'Équilibrée' : 'Séquentielle'}\n\n📅 Vérifiez vos emails et ouvrez les fichiers .ics\n🔔 Rappels automatiques configurés :\n  • 1 heure avant\n  • 30 minutes avant\n\n💡 Compatible avec :\n  • Google Calendar\n  • Outlook\n  • Apple Calendar\n  • Thunderbird\n\n🔄 Synchronisation automatique sur tous vos appareils !`
+      }]);
+
+      // Sauvegarder l'email pour utilisation future
+      localStorage.setItem('medical_user_email', userEmail);
+
+    } catch (error) {
+      setChatMessages(prev => [...prev, {
+        type: 'ai',
+        content: '❌ Erreur lors de l\'envoi des invitations. Vérifiez votre connexion et réessayez.'
+      }]);
+    } finally {
+      setIsEmailSending(false);
+    }
+  };
+
+  // Système de rappels intelligents
+  const scheduleIntelligentReminders = useCallback(() => {
+    if (notificationPermission !== 'granted') return;
+
+    // Nettoyer les anciens rappels
+    activeReminders.forEach(reminderId => {
+      const timerId = parseInt(reminderId.split('-')[1]);
+      clearTimeout(timerId);
+    });
+    setActiveReminders([]);
+
+    const newReminders: string[] = [];
+
+    courses.forEach(course => {
+      course.sessions.forEach(session => {
+        if (!session.completed && session.date >= new Date()) {
+          const sessionDate = new Date(session.date);
+          const now = Date.now();
+
+          // Rappel la veille à 20h (si activé)
+          if (reminderSettings.beforeDay) {
+            const reminderBefore = new Date(sessionDate);
+            reminderBefore.setDate(sessionDate.getDate() - 1);
+            reminderBefore.setHours(20, 0, 0, 0);
+
+            const delayBefore = reminderBefore.getTime() - now;
+            if (delayBefore > 0 && delayBefore < 7 * 24 * 3600 * 1000) {
+              const timerId = window.setTimeout(() => {
+                new Notification('📅 Planning Médical - Demain', {
+                  body: `${course.name} (${session.intervalLabel}) - ${course.hoursPerDay}h`,
+                  icon: '/icon-192.png',
+                  tag: `reminder-before-${session.id}`,
+                  requireInteraction: true
+                });
+              }, delayBefore);
+
+              newReminders.push(`before-${timerId}`);
+            }
+          }
+
+          // Rappel le matin à 8h (si activé)
+          if (reminderSettings.morningOf) {
+            const reminderMorning = new Date(sessionDate);
+            reminderMorning.setHours(8, 0, 0, 0);
+
+            const delayMorning = reminderMorning.getTime() - now;
+            if (delayMorning > 0 && delayMorning < 7 * 24 * 3600 * 1000) {
+              const timerId = window.setTimeout(() => {
+                new Notification('🌅 Planning Médical - Aujourd\'hui', {
+                  body: `${course.name} (${session.intervalLabel}) - ${course.hoursPerDay}h`,
+                  icon: '/icon-192.png',
+                  tag: `reminder-morning-${session.id}`,
+                  requireInteraction: true
+                });
+              }, delayMorning);
+
+              newReminders.push(`morning-${timerId}`);
+            }
+          }
+
+          // Rappel 30min avant (si activé et session dans les 24h)
+          if (reminderSettings.thirtyMinBefore) {
+            const reminder30min = new Date(sessionDate);
+            reminder30min.setHours(sessionDate.getHours() - 0.5);
+
+            const delay30min = reminder30min.getTime() - now;
+            if (delay30min > 0 && delay30min < 24 * 3600 * 1000) {
+              const timerId = window.setTimeout(() => {
+                new Notification('⏰ Planning Médical - Dans 30 minutes', {
+                  body: `${course.name} (${session.intervalLabel}) commence bientôt !`,
+                  icon: '/icon-192.png',
+                  tag: `reminder-30min-${session.id}`,
+                  requireInteraction: true,
+                  actions: [
+                    { action: 'mark-done', title: '✅ Fait' },
+                    { action: 'reschedule', title: '🔄 Reporter' }
+                  ]
+                });
+              }, delay30min);
+
+              newReminders.push(`30min-${timerId}`);
+            }
+          }
+        }
+      });
+    });
+
+    setActiveReminders(newReminders);
+  }, [courses, notificationPermission, reminderSettings, activeReminders]);
+
+  // Notifications pour sessions du jour
+  const scheduleTodayNotifications = useCallback(() => {
+    if (notificationPermission !== 'granted') return;
+
+    const todaySessions = getTodaySessions();
+    const now = new Date();
+    now.setHours(8, 0, 0, 0); // 8h ce matin
+
+    if (todaySessions.length > 0) {
+      const totalHours = todaySessions.reduce((sum, s) => sum + s.hours, 0);
+
+      // Notification matinale si pas encore passée
+      if (now.getTime() > Date.now()) {
+        setTimeout(() => {
+          new Notification('🌅 Planning Médical - Sessions du jour', {
+            body: `${todaySessions.length} session(s) programmée(s) - ${totalHours}h total`,
+            icon: '/icon-192.png',
+            tag: 'daily-summary',
+            requireInteraction: true
+          });
+        }, now.getTime() - Date.now());
+      }
+    }
+  }, [getTodaySessions, notificationPermission]);
 
   const createConstraint = (date: string | Date, startHour: number, endHour: number, description: string): Constraint => {
     return {
@@ -630,28 +999,54 @@ const MedicalPlanningAgent = () => {
       const daySessions: WeeklyPlanSession[] = [];
       let totalHours = 0;
 
-      if (index !== 6) {
+      if (index !== 6) { // Pas dimanche
+        // Regrouper toutes les sessions de ce jour
+        const daySessionsData: {session: Session, course: Course}[] = [];
+
         courses.forEach(course => {
           course.sessions.forEach(session => {
             const sessionDate = new Date(session.date);
             sessionDate.setHours(0, 0, 0, 0);
 
             if (sessionDate.getTime() === dayStart.getTime()) {
-              daySessions.push({
-                course: course.name,
-                interval: session.interval,
-                intervalLabel: session.intervalLabel,
-                hours: course.hoursPerDay,
-                completed: session.completed,
-                success: session.success,
-                color: session.color,
-                rescheduled: session.rescheduled
-              });
-              if (!session.completed) {
-                totalHours += course.hoursPerDay;
-              }
+              daySessionsData.push({session, course});
             }
           });
+        });
+
+        // Trier les sessions par heure (si elle existe) ou par ordre d'ajout
+        daySessionsData.sort((a, b) => {
+          const aHour = a.session.date.getHours() || timePreferences.preferredStartHour;
+          const bHour = b.session.date.getHours() || timePreferences.preferredStartHour;
+          return aHour - bHour;
+        });
+
+        // Calculer les horaires pour chaque session
+        daySessionsData.forEach((sessionData, sessionIndex) => {
+          const {session, course} = sessionData;
+          const {start, end} = calculateOptimalSessionTime(
+            session.date,
+            course.hoursPerDay,
+            sessionIndex,
+            daySessionsData.length
+          );
+
+          daySessions.push({
+            course: course.name,
+            interval: session.interval,
+            intervalLabel: session.intervalLabel,
+            hours: course.hoursPerDay,
+            completed: session.completed,
+            success: session.success,
+            color: session.color,
+            rescheduled: session.rescheduled,
+            startTime: start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}),
+            endTime: end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})
+          });
+
+          if (!session.completed) {
+            totalHours += course.hoursPerDay;
+          }
         });
       }
 
@@ -746,7 +1141,11 @@ const MedicalPlanningAgent = () => {
 
         moveSession(course.id, session.id, toDate);
 
-        return `✅ Session déplacée avec succès !\n\n📅 "${course.name}" ${sessionInterval} (${course.hoursPerDay}h)\n🔄 Du ${fromDate.toLocaleDateString('fr-FR')} → ${toDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
+        // Calculer l'heure optimale pour le message de confirmation
+        const {start, end} = calculateOptimalSessionTime(toDate, course.hoursPerDay);
+        const timeRange = `${start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}-${end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}`;
+
+        return `✅ Session déplacée avec succès !\n\n📅 "${course.name}" ${sessionInterval} (${course.hoursPerDay}h)\n🔄 Du ${fromDate.toLocaleDateString('fr-FR')} → ${toDate.toLocaleDateString('fr-FR')}\n⏰ Horaire optimisé : ${timeRange}\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
       }
 
       return `❓ Format de déplacement non reconnu.\n\n💡 Utilisez :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Exemple : "Déplacer cours Anatomie J+10 du 16/09 au 19/09"`;
@@ -894,7 +1293,7 @@ const MedicalPlanningAgent = () => {
           });
         });
 
-        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 9h/jour)\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
+        return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Réorganisation automatique effectuée :\n• ${affectedSessions} session(s) de cours reportée(s)\n• Toutes les sessions en conflit ont été décalées\n• Les règles de planning sont respectées (Lundi-Samedi, max 9h/jour)\n⏰ Horaires recalculés automatiquement\n\n💡 Consultez votre planning mis à jour avec "Planning de la semaine"`;
       }
 
       return `⚠️ Contrainte ajoutée avec succès !\n\n📅 ${description} le ${constraintDate.toLocaleDateString('fr-FR')} de ${startHour}h à ${endHour}h\n☁️ Sauvegardé automatiquement dans MongoDB\n\n💡 Ajoutez des cours et ils seront automatiquement programmés en évitant cette période !`;
@@ -982,7 +1381,7 @@ const MedicalPlanningAgent = () => {
         totalCourses: prev.totalCourses + 1
       }));
 
-      let response = `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+2, J+10, J+25, J+47 - Révisions espacées`;
+      let response = `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement dans MongoDB\n\n🔄 Sessions programmées automatiquement :\n• J0 (${startDate.toLocaleDateString('fr-FR')}) - Apprentissage initial\n• J+1 - Première révision\n• J+2, J+10, J+25, J+47 - Révisions espacées\n⏰ Horaires optimisés selon vos préférences (${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h)`;
 
       if (rescheduledCount > 0) {
         response += `\n\n🔄 ${rescheduledCount} session(s) reportée(s) automatiquement`;
@@ -1052,14 +1451,15 @@ const MedicalPlanningAgent = () => {
           data.sessions.forEach(session => {
             const statusIcon = session.completed ? (session.success ? '✅' : '❌') : '⏳';
             const rescheduledIcon = session.rescheduled ? ' 🔄' : '';
-            response += `   ${statusIcon} ${session.course} (${session.intervalLabel}) - ${session.hours}h${rescheduledIcon}\n`;
+            const timeInfo = session.startTime && session.endTime ? ` (${session.startTime}-${session.endTime})` : '';
+            response += `   ${statusIcon} ${session.course} (${session.intervalLabel}) - ${session.hours}h${timeInfo}${rescheduledIcon}\n`;
           });
           response += `   📊 Total: ${data.totalHours}h\n`;
         }
         response += '\n';
       });
 
-      response += `🛌 Dimanche: Repos automatique`;
+      response += `🛌 Dimanche: Repos automatique\n⏰ Horaires calculés automatiquement (${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h)`;
       if (constraints.length > 0) {
         response += `\n⚠️ ${constraints.length} contrainte(s) prise(s) en compte`;
       }
@@ -1100,9 +1500,11 @@ const MedicalPlanningAgent = () => {
         const totalHours = todaySessions.reduce((sum, s) => sum + s.hours, 0);
         response += `📊 ${todaySessions.length} session(s) • ${totalHours}h total\n\n📚 Sessions :\n`;
 
-        todaySessions.forEach(item => {
+        todaySessions.forEach((item, index) => {
           const rescheduledIcon = item.session.rescheduled ? ' 🔄' : '';
-          response += `• ${item.course.name} (${item.session.intervalLabel}) - ${item.hours}h${rescheduledIcon}\n`;
+          const {start, end} = calculateOptimalSessionTime(item.session.date, item.course.hoursPerDay, index, todaySessions.length);
+          const timeInfo = `${start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}-${end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})}`;
+          response += `• ${item.course.name} (${item.session.intervalLabel}) - ${item.hours}h (${timeInfo})${rescheduledIcon}\n`;
         });
       }
 
@@ -1110,7 +1512,7 @@ const MedicalPlanningAgent = () => {
     }
 
     if (lowerMsg.includes('aide')) {
-      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n🗑️ SUPPRESSION :\n• "Supprimer tous les cours"\n• "Supprimer le cours [nom]"\n• "Supprimer session J+10 de [cours]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"\n\n🔄 DÉPLACEMENT :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Glisser-déposer dans le planning hebdomadaire\n\n☁️ Toutes vos données sont sauvegardées automatiquement dans MongoDB Atlas !`;
+      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n• "Ajouter [nom] avec [X]h démarrage le [date]"\n\n🗑️ SUPPRESSION :\n• "Supprimer tous les cours"\n• "Supprimer le cours [nom]"\n• "Supprimer session J+10 de [cours]"\n\n⚠️ CONTRAINTES :\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Rendez-vous médical le [date] toute la journée"\n• "Mes contraintes"\n\n📋 PLANNING :\n• "Mon planning du jour"\n• "Planning de la semaine"\n\n🔄 DÉPLACEMENT :\n• "Déplacer cours [nom] [J+X] du [DD/MM] au [DD/MM]"\n• Glisser-déposer dans le planning hebdomadaire\n\n✨ NOUVEAUTÉS :\n• Notifications push intelligentes\n• Invitations calendrier par email\n• Horaires optimisés automatiquement\n\n☁️ Toutes vos données sont sauvegardées automatiquement dans MongoDB Atlas !`;
     }
 
     return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "J'ai une contrainte le [date] de [heure] à [heure]"\n• "Mon planning du jour"\n• "Aide" pour plus de commandes`;
@@ -1126,10 +1528,30 @@ const MedicalPlanningAgent = () => {
     setInputMessage('');
   };
 
-  // useEffects (identiques)
+  // useEffects
   useEffect(() => {
     loadData();
-  }, [loadData]);
+
+    // Initialiser les notifications
+    initializeNotifications();
+
+    // Charger l'email sauvegardé
+    const savedEmail = localStorage.getItem('medical_user_email');
+    if (savedEmail) {
+      setUserEmail(savedEmail);
+      setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(savedEmail));
+    }
+
+    // Charger les préférences horaires
+    const savedTimePrefs = localStorage.getItem('medical_time_preferences');
+    if (savedTimePrefs) {
+      try {
+        setTimePreferences(JSON.parse(savedTimePrefs));
+      } catch (error) {
+        console.error('Erreur chargement préférences horaires:', error);
+      }
+    }
+  }, [loadData, initializeNotifications]);
 
   useEffect(() => {
     if (courses.length > 0 && !isLoading) {
@@ -1154,6 +1576,24 @@ const MedicalPlanningAgent = () => {
       completionRate: totalSessions > 0 ? Math.round((totalCompletedSessions / totalSessions) * 100) : 0
     });
   }, [courses, getTodaySessions]);
+
+  // Programmer les rappels intelligents quand les cours changent
+  useEffect(() => {
+    if (!isLoading && courses.length > 0) {
+      scheduleIntelligentReminders();
+      scheduleTodayNotifications();
+    }
+  }, [courses, reminderSettings, isLoading, scheduleIntelligentReminders, scheduleTodayNotifications]);
+
+  // Nettoyer les timers au démontage
+  useEffect(() => {
+    return () => {
+      activeReminders.forEach(reminderId => {
+        const timerId = parseInt(reminderId.split('-')[1]);
+        clearTimeout(timerId);
+      });
+    };
+  }, [activeReminders]);
 
   if (isLoading) {
     return (
@@ -1188,7 +1628,7 @@ const MedicalPlanningAgent = () => {
           )}
         </h1>
         <p className="text-gray-600">
-          Lundi-Samedi 9h-19h • Dimanche repos • Contraintes et réorganisation automatique
+          Lundi-Samedi avec horaires optimisés • Dimanche repos • Notifications + Invitations calendrier
         </p>
         <div className="text-sm text-gray-500 mt-1 flex items-center gap-4">
           <span className="flex items-center gap-1">
@@ -1202,6 +1642,9 @@ const MedicalPlanningAgent = () => {
           {lastSyncTime && (
             <span>Dernière sync: {lastSyncTime.toLocaleTimeString('fr-FR')}</span>
           )}
+          <span className="flex items-center gap-1">
+            ⏰ Horaires: {timePreferences.preferredStartHour}h-{timePreferences.preferredEndHour}h
+          </span>
         </div>
       </div>
 
@@ -1281,13 +1724,13 @@ const MedicalPlanningAgent = () => {
       {/* Contenu selon l'onglet actif */}
       {activeTab === 'planning' && (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Planning Hebdomadaire */}
+          {/* Planning Hebdomadaire avec HORAIRES */}
           <div className="lg:col-span-2">
             <div className="bg-white rounded-lg shadow-sm border mb-6">
               <div className="p-6 border-b flex items-center justify-between">
                 <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
                   <Calendar className="w-5 h-5" />
-                  Planning Hebdomadaire (Lundi-Samedi)
+                  Planning Hebdomadaire avec Horaires
                 </h2>
                 <div className="flex items-center gap-2">
                   <button
@@ -1319,7 +1762,7 @@ const MedicalPlanningAgent = () => {
                   return (
                     <div
                       key={dayName}
-                      className={`p-4 ${isToday ? 'bg-blue-50 border-blue-200' : ''} ${isOverloaded ? 'bg-red-50' : ''} ${isSunday ? 'bg-green-50' : ''} min-h-[200px]`}
+                      className={`p-4 ${isToday ? 'bg-blue-50 border-blue-200' : ''} ${isOverloaded ? 'bg-red-50' : ''} ${isSunday ? 'bg-green-50' : ''} min-h-[250px]`}
                       onDragOver={!isSunday ? handleDragOver : undefined}
                       onDrop={!isSunday ? (e) => handleDrop(e, dayData.date) : undefined}
                     >
@@ -1373,6 +1816,12 @@ const MedicalPlanningAgent = () => {
                                   <span>{session.intervalLabel}</span>
                                   <span className="font-medium">{session.hours}h</span>
                                 </div>
+                                {/* NOUVEAU : Affichage des heures */}
+                                {session.startTime && session.endTime && (
+                                  <div className="mt-1 text-xs font-mono bg-black bg-opacity-10 rounded px-1">
+                                    ⏰ {session.startTime}-{session.endTime}
+                                  </div>
+                                )}
                                 {session.rescheduled && (
                                   <div className="mt-1 text-orange-600">🔄 Reporté</div>
                                 )}
@@ -1433,418 +1882,3 @@ const MedicalPlanningAgent = () => {
                 </div>
               </div>
             )}
-          </div>
-
-          {/* Assistant IA */}
-          <div className="bg-white rounded-lg shadow-sm border">
-            <div className="p-4 border-b">
-              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                🤖 Assistant IA
-                {isOnline ? (
-                  <span className="text-xs text-green-600">☁️ MongoDB</span>
-                ) : (
-                  <span className="text-xs text-red-600">📱 Local</span>
-                )}
-              </h2>
-              <p className="text-xs text-gray-600">Contraintes • Réorganisation automatique • Sauvegarde MongoDB Atlas</p>
-            </div>
-
-            <div className="h-96 overflow-y-auto p-4 space-y-4">
-              {chatMessages.map((msg, index) => (
-                <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-xs p-3 rounded-lg ${
-                    msg.type === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-800'
-                  }`}>
-                    <div className="text-sm whitespace-pre-line">{msg.content}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="p-4 border-t">
-              <div className="flex gap-2 mb-3">
-                <input
-                  type="text"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                  placeholder="Ajouter cours ou contrainte..."
-                  className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                  onClick={handleSendMessage}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setInputMessage('Ajouter Anatomie avec 2 heures par jour')}
-                  className="text-xs p-2 bg-blue-50 hover:bg-blue-100 rounded border text-blue-700"
-                >
-                  ➕ Nouveau cours
-                </button>
-                <button
-                  onClick={() => setInputMessage('J\'ai une contrainte le 15/03 de 9h à 12h')}
-                  className="text-xs p-2 bg-red-50 hover:bg-red-100 rounded border text-red-700"
-                >
-                  ⚠️ Contrainte
-                </button>
-                <button
-                  onClick={() => setInputMessage('Planning de la semaine')}
-                  className="text-xs p-2 bg-purple-50 hover:bg-purple-100 rounded border text-purple-700"
-                >
-                  📅 Semaine
-                </button>
-                <button
-                  onClick={() => setInputMessage('Déplacer cours Anatomie J+10 du 16/09 au 19/09')}
-                  className="text-xs p-2 bg-orange-50 hover:bg-orange-100 rounded border text-orange-700"
-                >
-                  🔄 Déplacer
-                </button>
-                <button
-                  onClick={() => setInputMessage('Mes contraintes')}
-                  className="text-xs p-2 bg-yellow-50 hover:bg-yellow-100 rounded border text-yellow-700"
-                >
-                  📋 Contraintes
-                </button>
-                <button
-                  onClick={() => setInputMessage('Aide')}
-                  className="text-xs p-2 bg-green-50 hover:bg-green-100 rounded border text-green-700"
-                >
-                  ❓ Aide
-                </button>
-              </div>
-
-              <div className="mt-3 p-2 bg-gray-50 rounded text-xs">
-                <div className="font-medium text-gray-700 mb-1 flex items-center gap-2">
-                  🛌 Dimanche repos • 🔄 Réorganisation auto
-                  {isOnline ? (
-                    <span className="text-green-600">☁️ MongoDB sync</span>
-                  ) : (
-                    <span className="text-red-600">📱 Mode local</span>
-                  )}
-                </div>
-                <div className="flex flex-wrap gap-1 mb-1">
-                  {jIntervals.map(interval => (
-                    <span key={interval.key} className={`px-2 py-1 rounded ${interval.color}`}>
-                      {interval.key}
-                    </span>
-                  ))}
-                </div>
-                <div className="text-gray-600">
-                  💡 Variables MONGODB_URI configurées dans Vercel
-                </div>
-                <div className="text-gray-600 mt-1">
-                  🔄 Fonctions : Glisser-déposer + Déplacer cours [nom] [J+X] du [date] au [date]
-                </div>
-                {constraints.length > 0 && (
-                  <div className="mt-1 text-orange-600">
-                    ⚠️ {constraints.length} contrainte(s) active(s) - Planning adapté automatiquement
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'courses' && (
-        <div>
-          {courses.length > 0 ? (
-            <div className="bg-white rounded-lg shadow-sm border">
-              <div className="p-4 border-b">
-                <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                  📚 Gestion des Cours
-                  <span className="text-sm font-normal text-gray-500">({courses.length} cours actifs)</span>
-                  {isOnline && <span className="text-xs text-green-600">☁️ MongoDB sync</span>}
-                </h2>
-              </div>
-
-              <div className="p-4 space-y-4">
-                {courses.map(course => {
-                  const completedSessions = course.sessions.filter(s => s.completed).length;
-                  const rescheduledSessions = course.sessions.filter(s => s.rescheduled && !s.completed).length;
-
-                  return (
-                    <div key={course.id} className="border rounded-lg p-4 bg-gray-50">
-                      <div className="flex justify-between items-start mb-3">
-                        <div>
-                          <h3 className="font-medium text-gray-800">{course.name}</h3>
-                          <p className="text-sm text-gray-600">
-                            {course.hoursPerDay}h/jour • {completedSessions}/{course.totalSessions} sessions terminées
-                            {rescheduledSessions > 0 && (
-                              <span className="ml-2 text-orange-600">🔄 {rescheduledSessions} reportées</span>
-                            )}
-                          </p>
-                        </div>
-                        <button
-                          onClick={() => {
-                            const confirmDelete = window.confirm(`Supprimer le cours "${course.name}" et toutes ses sessions ?`);
-                            if (confirmDelete) {
-                              deleteCourse(course.id);
-                            }
-                          }}
-                          className="px-3 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded text-sm font-medium transition-colors"
-                        >
-                          🗑️ Supprimer cours
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-2 sm:grid-cols-4 md:grid-cols-7 gap-2">
-                        {course.sessions.map(session => {
-                          const isCompleted = session.completed;
-                          const statusIcon = isCompleted ? (session.success ? '✅' : '❌') : '⏳';
-
-                          return (
-                            <div key={session.id} className="relative group">
-                              <div className={`text-xs p-2 rounded ${session.color} ${isCompleted ? 'opacity-60' : ''}`}>
-                                <div className="flex justify-between items-center">
-                                  <span className="font-medium">{session.interval}</span>
-                                  <span>{statusIcon}</span>
-                                </div>
-                                <div className="text-xs opacity-75">
-                                  {session.date.toLocaleDateString('fr-FR')}
-                                </div>
-                                {session.rescheduled && (
-                                  <div className="text-xs text-orange-600">🔄</div>
-                                )}
-                              </div>
-
-                              {!isCompleted && (
-                                <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <button
-                                    onClick={() => {
-                                      const confirmDelete = window.confirm(`Supprimer la session ${session.interval} du cours "${course.name}" ?`);
-                                      if (confirmDelete) {
-                                        deleteSession(course.id, session.id);
-                                      }
-                                    }}
-                                    className="w-5 h-5 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs flex items-center justify-center"
-                                    title="Supprimer cette session"
-                                  >
-                                    ×
-                                  </button>
-                                </div>
-                              )}
-
-                              {!isCompleted && (
-                                <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                                  <div className="flex gap-1 p-1">
-                                    <button
-                                      onClick={() => markSessionComplete(course.id, session.id, true)}
-                                      className="flex-1 bg-green-500 hover:bg-green-600 text-white text-xs rounded px-1 py-0.5"
-                                      title="Marquer comme réussie"
-                                    >
-                                      ✓
-                                    </button>
-                                    <button
-                                      onClick={() => markSessionComplete(course.id, session.id, false)}
-                                      className="flex-1 bg-red-500 hover:bg-red-600 text-white text-xs rounded px-1 py-0.5"
-                                      title="Marquer comme échouée"
-                                    >
-                                      ✗
-                                    </button>
-                                  </div>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-
-                      <div className="mt-3 flex gap-2 flex-wrap">
-                        <button
-                          onClick={() => {
-                            const incompleteSessions = course.sessions.filter(s => !s.completed);
-                            const confirmDelete = window.confirm(`Supprimer toutes les sessions incomplètes de "${course.name}" (${incompleteSessions.length} sessions) ?`);
-                            if (confirmDelete) {
-                              incompleteSessions.forEach(session => {
-                                deleteSession(course.id, session.id);
-                              });
-                            }
-                          }}
-                          className="text-xs px-2 py-1 bg-orange-100 hover:bg-orange-200 text-orange-700 rounded"
-                          disabled={course.sessions.filter(s => !s.completed).length === 0}
-                        >
-                          🗑️ Suppr. sessions restantes
-                        </button>
-
-                        <button
-                          onClick={() => {
-                            const allIncomplete = course.sessions.filter(s => !s.completed);
-                            allIncomplete.forEach(session => {
-                              markSessionComplete(course.id, session.id, true);
-                            });
-                          }}
-                          className="text-xs px-2 py-1 bg-green-100 hover:bg-green-200 text-green-700 rounded"
-                          disabled={course.sessions.filter(s => !s.completed).length === 0}
-                        >
-                          ✅ Tout marquer réussi
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-
-                <div className="pt-4 border-t">
-                  <button
-                    onClick={() => {
-                      const confirmDelete = window.confirm(`Supprimer TOUS les cours (${courses.length}) et toutes leurs sessions ?`);
-                      if (confirmDelete) {
-                        deleteAllCourses();
-                      }
-                    }}
-                    className="w-full p-3 bg-red-100 hover:bg-red-200 text-red-700 rounded-lg font-medium transition-colors"
-                  >
-                    🗑️ Supprimer tous les cours ({courses.length})
-                  </button>
-                </div>
-              </div>
-            </div>
-          ) : (
-            <div className="bg-white rounded-lg shadow-sm border p-12 text-center">
-              <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-              <h3 className="text-xl font-medium text-gray-800 mb-2">Aucun cours à gérer</h3>
-              <p className="text-gray-600 mb-6">Ajoutez des cours depuis l assistant IA pour les voir apparaître ici</p>
-              <button
-                onClick={() => setActiveTab('planning')}
-                className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-              >
-                🤖 Aller à l Assistant IA
-              </button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {activeTab === 'settings' && (
-        <div className="space-y-6">
-          {/* Configuration MongoDB Atlas */}
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-4 flex items-center gap-2">
-              ☁️ Configuration MongoDB Atlas
-              {isOnline ? (
-                <span className="text-sm text-green-600">✅ Connecté</span>
-              ) : (
-                <span className="text-sm text-red-600">❌ Mode backup local</span>
-              )}
-            </h2>
-
-            <div className="bg-green-50 p-4 rounded-lg mb-4">
-              <h3 className="font-medium text-green-800 mb-2">✅ MongoDB Atlas configuré !</h3>
-              <p className="text-sm text-green-700">
-                Vos données sont automatiquement sauvegardées dans le cloud MongoDB Atlas et synchronisées entre tous vos appareils.
-              </p>
-              <div className="mt-2 text-xs text-green-600 space-y-1">
-                <div>• API Routes Next.js : /api/courses et /api/constraints</div>
-                <div>• Backup local automatique en cas de problème de connexion</div>
-                <div>• Synchronisation temps réel avec MongoDB Atlas</div>
-                {lastSyncTime && (
-                  <div>• Dernière synchronisation : {lastSyncTime.toLocaleTimeString('fr-FR')}</div>
-                )}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-              <div className="bg-blue-50 p-4 rounded-lg">
-                <h3 className="font-medium text-blue-800 mb-2">🎯 Méthode des J</h3>
-                <p className="text-sm text-blue-700 mb-2">Sessions automatiques</p>
-                <ul className="text-xs space-y-1 text-blue-600">
-                  <li>• J0 : Apprentissage initial</li>
-                  <li>• J+1, J+2, J+10 : Consolidation</li>
-                  <li>• J+25, J+47 : Mémorisation long terme</li>
-                </ul>
-              </div>
-
-              <div className="bg-orange-50 p-4 rounded-lg">
-                <h3 className="font-medium text-orange-800 mb-2">🔄 Réorganisation</h3>
-                <p className="text-sm text-orange-700 mb-2">Évitement automatique</p>
-                <ul className="text-xs space-y-1 text-orange-600">
-                  <li>• Report si conflit avec contraintes</li>
-                  <li>• Respect des intervalles J</li>
-                  <li>• Max 9h/jour, Dimanche libre</li>
-                </ul>
-              </div>
-
-              <div className="bg-green-50 p-4 rounded-lg">
-                <h3 className="font-medium text-green-800 mb-2">☁️ MongoDB Atlas</h3>
-                <p className="text-sm text-green-700 mb-2">Sauvegarde cloud sécurisée</p>
-                <ul className="text-xs space-y-1 text-green-600">
-                  <li>• Synchronisation automatique</li>
-                  <li>• Backup local en cas de panne</li>
-                  <li>• Accessibilité multi-appareils</li>
-                </ul>
-              </div>
-            </div>
-          </div>
-
-          {/* Contraintes actives */}
-          {constraints.length > 0 && (
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h3 className="font-medium text-red-800 mb-4">⚠️ Contraintes actives ({constraints.length}) :</h3>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                {constraints.map(constraint => (
-                  <div key={constraint.id} className="text-sm text-red-700 p-3 bg-red-50 rounded-lg">
-                    <div className="font-medium">{constraint.description}</div>
-                    <div className="text-xs">
-                      📅 {constraint.date.toLocaleDateString('fr-FR')} •
-                      ⏰ {constraint.startHour === 0 && constraint.endHour === 24 ?
-                          'Toute la journée' :
-                          `${constraint.startHour}h-${constraint.endHour}h`}
-                    </div>
-                  </div>
-                ))}
-              </div>
-              <div className="mt-3 text-xs text-red-600">
-                💡 Toutes les sessions de cours évitent automatiquement ces créneaux
-              </div>
-            </div>
-          )}
-
-          {/* État du planning */}
-          {courses.length > 0 && (
-            <div className="bg-white rounded-lg shadow-sm border p-6">
-              <h3 className="font-medium text-blue-800 mb-4">📊 État actuel du planning :</h3>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                {courses.map(course => {
-                  const rescheduledCount = course.sessions.filter(s => s.rescheduled && !s.completed).length;
-                  return (
-                    <div key={course.id} className="text-center p-3 bg-blue-50 rounded-lg">
-                      <div className="font-medium text-blue-700">{course.name}</div>
-                      <div className="text-sm text-blue-600">{course.hoursPerDay}h/jour</div>
-                      {rescheduledCount > 0 && (
-                        <div className="text-xs text-orange-600">🔄 {rescheduledCount} reportées</div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-              <div className="mt-4 text-sm text-blue-700 space-y-1">
-                <div><strong>Total :</strong> {courses.reduce((sum, course) => sum + course.hoursPerDay, 0)}h/jour
-                • <strong>Capacité :</strong> {workingHours.availableHours}h disponibles
-                • <strong>Dimanche :</strong> Toujours libre 🛌</div>
-                {constraints.length > 0 && (
-                  <div><strong>Contraintes :</strong> {constraints.length} respectée(s) ⚠️</div>
-                )}
-                {isOnline && (
-                  <div className="text-green-600">
-                    <strong>☁️ MongoDB Atlas :</strong> Sauvegarde automatique activée
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-    </div>
-  );
-};
-
-export default function Home() {
-  return <MedicalPlanningAgent />;
-}
