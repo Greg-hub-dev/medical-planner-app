@@ -2,15 +2,19 @@
   "name": "medical-planner",
   "version": "0.1.0",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "prepare:standalone": "node scripts/prepare-standalone.mjs",
+    "electron:dev": "concurrently -k -n next,electron \"next dev\" \"wait-on http://localhost:3000 && cross-env ELECTRON_START_URL=http://localhost:3000 electron electron/main.js\"",
+    "dist": "next build && npm run prepare:standalone && electron-builder",
+    "dist:dir": "next build && npm run prepare:standalone && electron-builder --dir"
   },
   "dependencies": {
     "lucide-react": "^0.542.0",
-    "mongoose": "^8.18.0",
     "next": "15.5.2",
     "react": "19.1.0",
     "react-dom": "19.1.0",
@@ -23,9 +27,47 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@types/nodemailer": "^6.4.14",
+    "concurrently": "^9.1.0",
+    "cross-env": "^7.0.3",
+    "electron": "^33.2.0",
+    "electron-builder": "^25.1.8",
     "eslint": "^9",
     "eslint-config-next": "15.5.2",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.greg.medicalplanner",
+    "productName": "Medical Planner",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "package.json",
+      "!**/node_modules/**"
+    ],
+    "extraResources": [
+      {
+        "from": ".next/standalone",
+        "to": "standalone"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.medical"
+    },
+    "linux": {
+      "target": "AppImage",
+      "category": "Education"
+    }
   }
 }

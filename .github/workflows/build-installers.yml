@@ -1,0 +1,52 @@
+name: Build installers
+
+# Construit les installeurs de bureau :
+#   - .exe (NSIS) sur un runner Windows
+#   - .dmg sur un runner macOS
+# Les fichiers sont disponibles en téléchargement dans l'onglet "Artifacts" du run.
+
+on:
+  push:
+    branches: ['master', 'main', 'build/**']
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: medical-planner-windows-exe
+            pattern: dist/*.exe
+          - os: macos-latest
+            artifact: medical-planner-macos-dmg
+            pattern: dist/*.dmg
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build installer
+        run: npm run dist
+        env:
+          # Pas de signature de code : produit un installeur non signé.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.pattern }}
+          if-no-files-found: error
