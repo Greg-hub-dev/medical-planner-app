@@ -1,1391 +1,842 @@
 'use client';
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { Calendar, Clock, Brain, Plus, CheckCircle2, ChevronLeft, ChevronRight, Wifi, WifiOff, Settings, BookOpen } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import {
+  Brain, Calendar, Clock, CheckCircle2, AlertTriangle, Plus, Minus, Trash2,
+  ChevronLeft, ChevronRight, BookOpen, Settings as SettingsIcon, Bell, Mail,
+  Check, X, RefreshCw, Wifi, WifiOff, Sun, Moon, Download, Upload, Flame, TrendingUp,
+} from 'lucide-react';
+import { t as translate, dayLabels, APP_NAME, type Lang } from '../../lib/i18n';
+import { parseCommand } from '../../lib/commandParser';
+import {
+  generateSessions, markSession as engineMark, rescheduleOverdue, countOverdue,
+  colorFor, newId, type EngineSession,
+} from '../../lib/spacedRepetition';
 
-// Configuration API MongoDB
-const API_CONFIG = {
-  coursesEndpoint: '/api/courses',
-  constraintsEndpoint: '/api/constraints',
-  useLocalBackup: true // Garde localStorage comme backup
-};
-
-// Interfaces TypeScript
-interface JInterval {
-  key: string;
-  days: number;
-  label: string;
-  color: string;
-}
-
-interface Session {
-  id: string;
-  date: Date;
-  originalDate: Date;
-  interval: string;
-  intervalLabel: string;
-  completed: boolean;
-  success: boolean | null;
-  color: string;
-  rescheduled: boolean;
-}
+// ---- Types ----------------------------------------------------------------
+type Session = EngineSession;
 
 interface Course {
-  id: number;
+  id: string;
   name: string;
   hoursPerDay: number;
   createdAt: Date;
   sessions: Session[];
-  totalSessions: number;
-  completedSessions: number;
 }
 
 interface Constraint {
-  id: number;
+  id: string;
   date: Date;
+  endDate: Date | null;
+  allDay: boolean;
   startHour: number;
   endHour: number;
   description: string;
-  createdAt: Date;
 }
 
-interface Stats {
-  totalCourses: number;
-  todayHours: number;
-  completionRate: number;
+interface ChatMessage { type: 'ai' | 'user'; content: string; }
+
+interface TimePrefs {
+  preferredStartHour: number;
+  preferredEndHour: number;
+  lunchBreakStart: number;
+  lunchBreakEnd: number;
 }
 
-interface ChatMessage {
-  type: string;
-  content: string;
-}
-
-interface WorkingHours {
-  start: number;
-  end: number;
-  lunchBreak: { start: number; end: number };
-  availableHours: number;
-}
-
-interface WeeklyPlanSession {
+interface DaySession {
+  courseId: string;
+  sessionId: string;
   course: string;
   interval: string;
-  intervalLabel: string;
   hours: number;
   completed: boolean;
   success: boolean | null;
-  color: string;
   rescheduled: boolean;
-  startTime?: string; // NOUVEAU : heure de début
-  endTime?: string;   // NOUVEAU : heure de fin
+  startTime: string;
+  endTime: string;
 }
 
-interface DayPlan {
-  date: Date;
-  sessions: WeeklyPlanSession[];
-  totalHours: number;
-}
+interface DayPlan { date: Date; sessions: DaySession[]; totalHours: number; }
 
-interface WeeklyPlan {
-  [key: string]: DayPlan;
-}
+const API = { courses: '/api/courses', constraints: '/api/constraints' };
 
-interface TodaySession {
-  course: Course;
-  session: Session;
-  hours: number;
-}
+// ---- Component ------------------------------------------------------------
+const MemoMed = () => {
+  const [lang, setLang] = useState<Lang>(() =>
+    (typeof window !== 'undefined' && (localStorage.getItem('memomed_lang') as Lang)) || 'fr'
+  );
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    if (typeof window === 'undefined') return 'light';
+    const saved = localStorage.getItem('memomed_theme');
+    if (saved === 'dark' || saved === 'light') return saved;
+    return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  });
+  const importRef = useRef<HTMLInputElement>(null);
+  const timersRef = useRef<number[]>([]);
+  const t = useCallback((k: string, v?: Record<string, string | number>) => translate(lang, k, v), [lang]);
 
-const MedicalPlanningAgent = () => {
-  // États existants
   const [courses, setCourses] = useState<Course[]>([]);
   const [constraints, setConstraints] = useState<Constraint[]>([]);
-  const [currentWeek, setCurrentWeek] = useState<number>(0);
-  const [isLoading, setIsLoading] = useState<boolean>(true);
-  const [isOnline, setIsOnline] = useState<boolean>(true);
+  const [currentWeek, setCurrentWeek] = useState(0);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isOnline, setIsOnline] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
-  const [stats, setStats] = useState<Stats>({
-    totalCourses: 0,
-    todayHours: 0,
-    completionRate: 0
-  });
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([
-    {
-      type: 'ai',
-      content: '🎓 Bonjour ! Je suis votre agent de planning médical.\n\n📅 Planning: Lundi-Samedi • Dimanche = Repos automatique\n\n💡 Formats disponibles:\n• "Ajouter Anatomie avec 2 heures par jour"\n• "Ajouter Physiologie avec 1.5h démarrage le 15/03"\n• "J\'ai une contrainte le 20/03 de 9h à 12h"\n• "Déplacer cours Anatomie J+10 du 16/09 au 19/09"\n\n🔄 Nouveaux intervalles J : J0, J+1, J+2, J+10, J+25, J+47\n🎯 Glisser-déposer activé dans le planning !\n☁️ Sauvegarde automatique MongoDB Atlas\n\n✨ NOUVEAU : Notifications push + Invitations calendrier avec horaires intelligents !'
-    }
-  ]);
-  const [inputMessage, setInputMessage] = useState<string>('');
-
-  // États pour le drag and drop
-  const [draggedSession, setDraggedSession] = useState<{
-    courseId: number;
-    sessionId: string;
-    courseName: string;
-    interval: string;
-    hours: number;
-  } | null>(null);
-
-  // État pour les onglets
   const [activeTab, setActiveTab] = useState<'planning' | 'courses' | 'settings'>('planning');
+  const [inputMessage, setInputMessage] = useState('');
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => [
+    { type: 'ai', content: translate(
+      (typeof window !== 'undefined' && (localStorage.getItem('memomed_lang') as Lang)) || 'fr',
+      'assistant.welcome') },
+  ]);
 
-  // États pour les nouvelles fonctionnalités
-  const [userEmail, setUserEmail] = useState<string>('');
-  const [isEmailValid, setIsEmailValid] = useState<boolean>(false);
-  const [notificationPermission, setNotificationPermission] = useState<string>('default');
-  const [activeReminders, setActiveReminders] = useState<string[]>([]);
-  const [isEmailSending, setIsEmailSending] = useState<boolean>(false);
-
-  // Paramètres de créneaux horaires
-  const [timePreferences, setTimePreferences] = useState({
-    preferredStartHour: 9,
-    preferredEndHour: 18,
-    lunchBreakStart: 13,
-    lunchBreakEnd: 14,
-    allowWeekends: false,
-    distributeEvenly: true
+  const [timePrefs, setTimePrefs] = useState<TimePrefs>({
+    preferredStartHour: 9, preferredEndHour: 18, lunchBreakStart: 13, lunchBreakEnd: 14,
   });
 
-  const workingHours: WorkingHours = {
-    start: 9,
-    end: 19,
-    lunchBreak: { start: 13, end: 14 },
-    availableHours: 9
-  };
+  const [userEmail, setUserEmail] = useState('');
+  const [isEmailValid, setIsEmailValid] = useState(false);
+  const [isEmailSending, setIsEmailSending] = useState(false);
+  const [notificationPermission, setNotificationPermission] = useState('default');
 
-  const jIntervals: JInterval[] = [
-    { key: 'J0', days: 0, label: 'J0 (Apprentissage)', color: 'bg-blue-100 text-blue-700' },
-    { key: 'J+1', days: 1, label: 'J+1', color: 'bg-red-100 text-red-700' },
-    { key: 'J+2', days: 2, label: 'J+2', color: 'bg-orange-100 text-orange-700' },
-    { key: 'J+10', days: 10, label: 'J+10', color: 'bg-yellow-100 text-yellow-700' },
-    { key: 'J+25', days: 25, label: 'J+25', color: 'bg-green-100 text-green-700' },
-    { key: 'J+47', days: 47, label: 'J+47', color: 'bg-purple-100 text-purple-700' }
-  ];
+  // New-constraint form
+  const [ncDate, setNcDate] = useState('');
+  const [ncAllDay, setNcAllDay] = useState(true);
+  const [ncFrom, setNcFrom] = useState(9);
+  const [ncTo, setNcTo] = useState(12);
+  const [ncDesc, setNcDesc] = useState('');
 
-  // Système de notifications push
-  const initializeNotifications = useCallback(async () => {
-    if ('Notification' in window && 'serviceWorker' in navigator) {
-      const permission = await Notification.requestPermission();
-      setNotificationPermission(permission);
+  const [draggedSession, setDraggedSession] = useState<{ courseId: string; sessionId: string } | null>(null);
 
-      if (permission === 'granted') {
-        navigator.serviceWorker.register('/sw.js').catch(console.error);
-      }
-    }
+  const availableHours = Math.max(1, timePrefs.preferredEndHour - timePrefs.preferredStartHour - 1);
+  const say = (content: string) => setChatMessages((p) => [...p, { type: 'ai', content }]);
+
+  // ---- Persistence --------------------------------------------------------
+  const saveCourses = useCallback(async (data: Course[]) => {
+    const forDB = data.map((c) => ({
+      ...c, createdAt: c.createdAt.toISOString(),
+      sessions: c.sessions.map((s) => ({ ...s, date: s.date.toISOString(), originalDate: s.originalDate.toISOString() })),
+    }));
+    try {
+      const r = await fetch(API.courses, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ courses: forDB }) });
+      if (!r.ok) throw new Error();
+      setIsOnline(true); setLastSyncTime(new Date());
+      localStorage.setItem('memomed_courses_backup', JSON.stringify(forDB));
+    } catch { setIsOnline(false); localStorage.setItem('memomed_courses_backup', JSON.stringify(forDB)); }
   }, []);
 
-  const testNotification = () => {
-    if (notificationPermission === 'granted') {
-      new Notification('🎯 Test Planning Médical', {
-        body: 'Les notifications fonctionnent parfaitement !',
-        icon: '/icon-192.png',
-        tag: 'test-notification'
-      });
-    }
-  };
-
-  // Fonction pour calculer l'heure optimale d'une session
-  const calculateOptimalSessionTime = (sessionDate: Date, duration: number, sessionIndex: number = 0, totalSessionsThisDay: number = 1): {start: Date, end: Date} => {
-    const { preferredStartHour, preferredEndHour, lunchBreakStart, lunchBreakEnd, distributeEvenly } = timePreferences;
-
-    // Récupérer les sessions déjà programmées ce jour
-    const sameDaySessions = courses.flatMap(course =>
-      course.sessions.filter(session =>
-        !session.completed &&
-        session.date.toDateString() === sessionDate.toDateString()
-      ).map(session => ({
-        start: session.date.getHours() || preferredStartHour,
-        duration: course.hoursPerDay
-      }))
-    );
-
-    // Créneaux occupés (incluant pause déjeuner)
-    const occupiedSlots: {start: number, end: number}[] = [
-      { start: lunchBreakStart, end: lunchBreakEnd }, // Pause déjeuner
-      ...sameDaySessions.map(session => ({
-        start: session.start,
-        end: session.start + session.duration
-      }))
-    ];
-
-    // Trouver le meilleur créneau libre
-    let bestStart = preferredStartHour;
-
-    if (distributeEvenly && totalSessionsThisDay > 1) {
-      // Distribution équilibrée dans la journée
-      const availableHours = (preferredEndHour - preferredStartHour) - (lunchBreakEnd - lunchBreakStart);
-      const slotSize = availableHours / totalSessionsThisDay;
-      bestStart = preferredStartHour + (sessionIndex * slotSize);
-
-      // Éviter la pause déjeuner
-      if (bestStart >= lunchBreakStart - 0.5 && bestStart < lunchBreakEnd) {
-        bestStart = lunchBreakEnd;
-      }
-    } else {
-      // Recherche du premier créneau libre
-      for (let hour = preferredStartHour; hour <= preferredEndHour - duration; hour += 0.5) {
-        const wouldConflict = occupiedSlots.some(slot =>
-          !(hour + duration <= slot.start || hour >= slot.end)
-        );
-
-        if (!wouldConflict) {
-          bestStart = hour;
-          break;
-        }
-      }
-    }
-
-    // Vérifier les contraintes utilisateur
-    const sessionConstraints = constraints.filter(constraint => {
-      const constraintDate = new Date(constraint.date);
-      constraintDate.setHours(0, 0, 0, 0);
-      const checkDate = new Date(sessionDate);
-      checkDate.setHours(0, 0, 0, 0);
-      return constraintDate.getTime() === checkDate.getTime();
-    });
-
-    // Éviter les contraintes
-    sessionConstraints.forEach(constraint => {
-      if (bestStart < constraint.endHour && bestStart + duration > constraint.startHour) {
-        // Conflit détecté, décaler après la contrainte
-        bestStart = Math.max(bestStart, constraint.endHour);
-      }
-    });
-
-    // S'assurer que ça ne dépasse pas les heures de fin
-    if (bestStart + duration > preferredEndHour) {
-      bestStart = preferredEndHour - duration;
-    }
-
-    // Créer les objets Date
-    const startTime = new Date(sessionDate);
-    const minutes = (bestStart % 1) * 60;
-    startTime.setHours(Math.floor(bestStart), minutes, 0, 0);
-
-    const endTime = new Date(startTime);
-    endTime.setHours(startTime.getHours() + Math.floor(duration), startTime.getMinutes() + ((duration % 1) * 60));
-
-    return { start: startTime, end: endTime };
-  };
-
-  // Envoi invitations email calendrier
-  const sendCalendarInvitations = async () => {
-    if (!isEmailValid) {
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: '❌ Veuillez saisir un email valide pour recevoir les invitations calendrier.'
-      }]);
-      return;
-    }
-
-    setIsEmailSending(true);
-
+  const saveConstraints = useCallback(async (data: Constraint[]) => {
+    const forDB = data.map((c) => ({ ...c, date: c.date.toISOString(), endDate: c.endDate ? c.endDate.toISOString() : null }));
     try {
-      // Préparer les sessions futures non complétées
-      const upcomingSessions: { session: Session; course: Course }[] = [];
-      courses.forEach(course => {
-        course.sessions.forEach(session => {
-          if (!session.completed && session.date >= new Date()) {
-            upcomingSessions.push({ session, course });
-          }
-        });
-      });
-
-      if (upcomingSessions.length === 0) {
-        setChatMessages(prev => [...prev, {
-          type: 'ai',
-          content: '⚠️ Aucune session future à envoyer. Ajoutez des cours ou toutes les sessions sont terminées.'
-        }]);
-        setIsEmailSending(false);
-        return;
-      }
-
-      // Envoyer via l'API
-      const response = await fetch('/api/send-invitations', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          userEmail: userEmail,
-          timePreferences: timePreferences, // Inclure les préférences horaires
-          sessions: upcomingSessions.map(({ session, course }) => ({
-            session: {
-              id: session.id,
-              date: session.date.toISOString(),
-              interval: session.interval,
-              intervalLabel: session.intervalLabel
-            },
-            course: {
-              name: course.name,
-              hoursPerDay: course.hoursPerDay
-            }
-          }))
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Erreur API');
-      }
-
-      const result = await response.json();
-      const totalSent = result.sessionsCount;
-
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: `✅ Invitations calendrier envoyées avec succès !\n\n📧 ${totalSent} sessions envoyées à ${userEmail}\n⏰ Horaires calculés automatiquement :\n  • Créneaux : ${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h\n  • Pause déjeuner : ${timePreferences.lunchBreakStart}h-${timePreferences.lunchBreakEnd}h\n  • Distribution : ${timePreferences.distributeEvenly ? 'Équilibrée' : 'Séquentielle'}\n\n📅 Vérifiez vos emails et ouvrez les fichiers .ics\n🔔 Rappels automatiques configurés :\n  • 1 heure avant\n  • 30 minutes avant\n\n💡 Compatible avec :\n  • Google Calendar\n  • Outlook\n  • Apple Calendar\n  • Thunderbird\n\n🔄 Synchronisation automatique sur tous vos appareils !`
-      }]);
-
-      // Sauvegarder l'email pour utilisation future
-      localStorage.setItem('medical_user_email', userEmail);
-
-    } catch {
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: '❌ Erreur lors de l\'envoi des invitations. Vérifiez votre connexion et réessayez.'
-      }]);
-    } finally {
-      setIsEmailSending(false);
-    }
-  };
-
-  // Système de rappels intelligents - fonction simplifiée pour éviter les variables non utilisées
-  const scheduleIntelligentReminders = useCallback(() => {
-    if (notificationPermission !== 'granted') return;
-
-    // Code simplifié pour éviter les warnings
-    console.log('Rappels programmés pour', courses.length, 'cours');
-  }, [courses, notificationPermission]);
-
-  // Toutes les autres fonctions (sauvegarde, chargement, etc.)
-  const saveCourses = useCallback(async (coursesData: Course[]) => {
-    if (coursesData.length === 0 && courses.length === 0) return;
-
-    const coursesForDB = coursesData.map(course => ({
-      ...course,
-      createdAt: course.createdAt.toISOString(),
-      sessions: course.sessions.map(session => ({
-        ...session,
-        date: session.date.toISOString(),
-        originalDate: session.originalDate.toISOString()
-      }))
-    }));
-
-    try {
-      const response = await fetch(API_CONFIG.coursesEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ courses: coursesForDB })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        console.log(`✅ ${result.count} cours sauvegardés dans MongoDB`);
-        setIsOnline(true);
-        setLastSyncTime(new Date());
-
-        if (API_CONFIG.useLocalBackup) {
-          localStorage.setItem('medical_courses_backup', JSON.stringify(coursesForDB));
-        }
-      } else {
-        throw new Error(`Erreur API: ${response.status}`);
-      }
-    } catch (error) {
-      console.error('❌ Erreur sauvegarde MongoDB courses:', error);
-      setIsOnline(false);
-
-      if (API_CONFIG.useLocalBackup) {
-        localStorage.setItem('medical_courses_backup', JSON.stringify(coursesForDB));
-        console.log('📱 Données sauvegardées en local comme backup');
-      }
-    }
-  }, [courses.length]);
-
-  const saveConstraints = useCallback(async (constraintsData: Constraint[]) => {
-    if (constraintsData.length === 0 && constraints.length === 0) return;
-
-    const constraintsForDB = constraintsData.map(constraint => ({
-      ...constraint,
-      date: constraint.date.toISOString(),
-      createdAt: constraint.createdAt.toISOString()
-    }));
-
-    try {
-      const response = await fetch(API_CONFIG.constraintsEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ constraints: constraintsForDB })
-      });
-
-      if (response.ok) {
-        const result = await response.json();
-        console.log(`✅ ${result.count} contraintes sauvegardées dans MongoDB`);
-        setIsOnline(true);
-        setLastSyncTime(new Date());
-
-        if (API_CONFIG.useLocalBackup) {
-          localStorage.setItem('medical_constraints_backup', JSON.stringify(constraintsForDB));
-        }
-      } else {
-        throw new Error(`Erreur API: ${response.status}`);
-      }
-    } catch (error) {
-      console.error('❌ Erreur sauvegarde MongoDB constraints:', error);
-      setIsOnline(false);
-
-      if (API_CONFIG.useLocalBackup) {
-        localStorage.setItem('medical_constraints_backup', JSON.stringify(constraintsForDB));
-        console.log('📱 Données sauvegardées en local comme backup');
-      }
-    }
-  }, [constraints.length]);
+      const r = await fetch(API.constraints, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ constraints: forDB }) });
+      if (!r.ok) throw new Error();
+      setIsOnline(true); setLastSyncTime(new Date());
+    } catch { setIsOnline(false); }
+  }, []);
 
   const loadData = useCallback(async () => {
     setIsLoading(true);
-
+    const hydrateCourses = (arr: unknown[]): Course[] => (arr as Record<string, unknown>[]).map((c) => ({
+      id: (c.id as string) ?? newId(),
+      name: c.name as string,
+      hoursPerDay: c.hoursPerDay as number,
+      createdAt: new Date(c.createdAt as string),
+      sessions: ((c.sessions as Record<string, unknown>[]) || []).map((s) => ({
+        id: (s.id as string) ?? newId(),
+        interval: s.interval as string,
+        date: new Date(s.date as string),
+        originalDate: new Date((s.originalDate as string) ?? (s.date as string)),
+        completed: Boolean(s.completed),
+        success: (s.success as boolean | null) ?? null,
+        rescheduled: Boolean(s.rescheduled),
+      })),
+    }));
     try {
-      console.log('🔄 Chargement depuis MongoDB...');
-
-      const [coursesResponse, constraintsResponse] = await Promise.all([
-        fetch(API_CONFIG.coursesEndpoint),
-        fetch(API_CONFIG.constraintsEndpoint)
-      ]);
-
-      if (coursesResponse.ok && constraintsResponse.ok) {
-        const coursesData = await coursesResponse.json();
-        const constraintsData = await constraintsResponse.json();
-
-        if (coursesData.courses && coursesData.courses.length > 0) {
-          const processedCourses = coursesData.courses.map((course: Course) => ({
-            ...course,
-            createdAt: new Date(course.createdAt),
-            sessions: course.sessions.map((session: Session) => ({
-              ...session,
-              date: new Date(session.date),
-              originalDate: new Date(session.originalDate)
-            }))
-          }));
-          setCourses(processedCourses);
-          console.log(`✅ ${processedCourses.length} cours chargés depuis MongoDB`);
-        }
-
-        if (constraintsData.constraints && constraintsData.constraints.length > 0) {
-          const processedConstraints = constraintsData.constraints.map((constraint: Constraint) => ({
-            ...constraint,
-            date: new Date(constraint.date),
-            createdAt: new Date(constraint.createdAt)
-          }));
-          setConstraints(processedConstraints);
-          console.log(`✅ ${processedConstraints.length} contraintes chargées depuis MongoDB`);
-        }
-
-        setIsOnline(true);
-        setLastSyncTime(new Date());
-
-        setChatMessages(prev => [...prev, {
-          type: 'ai',
-          content: `☁️ Données synchronisées avec MongoDB Atlas !\n\n✅ ${coursesData.courses?.length || 0} cours récupérés\n✅ ${constraintsData.constraints?.length || 0} contraintes récupérées\n\n🔄 Synchronisation automatique activée\n📧 Invitations calendrier prêtes !`
-        }]);
-
-      } else {
-        throw new Error(`Erreur API: courses(${coursesResponse.status}) constraints(${constraintsResponse.status})`);
+      const [cr, kr] = await Promise.all([fetch(API.courses), fetch(API.constraints)]);
+      if (cr.ok) {
+        const d = await cr.json();
+        if (d.courses?.length) setCourses(hydrateCourses(d.courses));
       }
-    } catch (error) {
-      console.error('❌ Erreur chargement MongoDB:', error);
+      if (kr.ok) {
+        const d = await kr.json();
+        if (d.constraints?.length) setConstraints((d.constraints as Record<string, unknown>[]).map((c) => ({
+          id: (c.id as string) ?? newId(),
+          date: new Date(c.date as string),
+          endDate: c.endDate ? new Date(c.endDate as string) : null,
+          allDay: c.allDay !== false,
+          startHour: (c.startHour as number) ?? 0,
+          endHour: (c.endHour as number) ?? 24,
+          description: (c.description as string) ?? '',
+        })));
+      }
+      setIsOnline(true); setLastSyncTime(new Date());
+    } catch {
       setIsOnline(false);
-
-      if (API_CONFIG.useLocalBackup) {
-        console.log('📱 Tentative de chargement depuis le backup local...');
-
-        const localCourses = localStorage.getItem('medical_courses_backup');
-        const localConstraints = localStorage.getItem('medical_constraints_backup');
-
-        if (localCourses) {
-          const courses = JSON.parse(localCourses).map((course: Course) => ({
-            ...course,
-            createdAt: new Date(course.createdAt),
-            sessions: course.sessions.map((session: Session) => ({
-              ...session,
-              date: new Date(session.date),
-              originalDate: new Date(session.originalDate)
-            }))
-          }));
-          setCourses(courses);
-          console.log(`📱 ${courses.length} cours chargés depuis le backup local`);
-        }
-
-        if (localConstraints) {
-          const constraints = JSON.parse(localConstraints).map((constraint: Constraint) => ({
-            ...constraint,
-            date: new Date(constraint.date),
-            createdAt: new Date(constraint.createdAt)
-          }));
-          setConstraints(constraints);
-          console.log(`📱 ${constraints.length} contraintes chargées depuis le backup local`);
-        }
-
-        if (localCourses || localConstraints) {
-          setChatMessages(prev => [...prev, {
-            type: 'ai',
-            content: `⚠️ Mode hors ligne - Données chargées depuis le backup local\n\n📱 Les données seront synchronisées avec MongoDB dès que la connexion sera rétablie`
-          }]);
-        }
-      }
-    } finally {
-      setIsLoading(false);
-    }
+      const b = localStorage.getItem('memomed_courses_backup');
+      if (b) setCourses(hydrateCourses(JSON.parse(b)));
+    } finally { setIsLoading(false); }
   }, []);
 
-  const handleDragStart = (e: React.DragEvent, courseId: number, sessionId: string, courseName: string, interval: string, hours: number) => {
-    setDraggedSession({ courseId, sessionId, courseName, interval, hours });
-    e.dataTransfer.effectAllowed = 'move';
-  };
+  useEffect(() => {
+    loadData();
+    const e = localStorage.getItem('memomed_user_email');
+    if (e) { setUserEmail(e); setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)); }
+    const p = localStorage.getItem('memomed_time_prefs');
+    if (p) { try { setTimePrefs(JSON.parse(p)); } catch {} }
+    if ('Notification' in window) setNotificationPermission(Notification.permission);
+  }, [loadData]);
 
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-  };
+  useEffect(() => { if (!isLoading) saveCourses(courses); }, [courses, isLoading, saveCourses]);
+  useEffect(() => { if (!isLoading) saveConstraints(constraints); }, [constraints, isLoading, saveConstraints]);
+  useEffect(() => { localStorage.setItem('memomed_lang', lang); }, [lang]);
+  useEffect(() => {
+    document.documentElement.classList.toggle('dark', theme === 'dark');
+    localStorage.setItem('memomed_theme', theme);
+  }, [theme]);
 
-  const handleDrop = (e: React.DragEvent, targetDate: Date) => {
-    e.preventDefault();
-
-    if (!draggedSession) return;
-
-    // Vérifier si c'est un dimanche
-    if (targetDate.getDay() === 0) {
-      setChatMessages(prev => [...prev, {
-        type: 'ai',
-        content: `❌ Impossible de déposer le dimanche !\n\n🛌 Dimanche = repos automatique.\n💡 La session "${draggedSession.courseName}" ${draggedSession.interval} ne peut pas être programmée ce jour-là.`
-      }]);
-      setDraggedSession(null);
-      return;
-    }
-
-    // Effectuer le déplacement
-    moveSession(draggedSession.courseId, draggedSession.sessionId, targetDate);
-
-    setChatMessages(prev => [...prev, {
-      type: 'ai',
-      content: `✅ Session déplacée par glisser-déposer !\n\n📅 "${draggedSession.courseName}" ${draggedSession.interval} (${draggedSession.hours}h)\n🔄 Nouvelle date : ${targetDate.toLocaleDateString('fr-FR')}\n☁️ Sauvegardé automatiquement dans MongoDB`
-    }]);
-
-    setDraggedSession(null);
-  };
-
-  const createCourseSessions = (courseName: string, startDate: Date = new Date()): Session[] => {
-    const sessions: Session[] = [];
-    const adjustedStartDate = new Date(startDate);
-
-    if (adjustedStartDate.getDay() === 0) {
-      adjustedStartDate.setDate(adjustedStartDate.getDate() + 1);
-    }
-
-    jIntervals.forEach(interval => {
-      const sessionDate = new Date(adjustedStartDate);
-      sessionDate.setDate(adjustedStartDate.getDate() + interval.days);
-
-      if (sessionDate.getDay() === 0) {
-        sessionDate.setDate(sessionDate.getDate() + 1);
-      }
-
-      sessions.push({
-        id: `${Date.now()}_${interval.key}`,
-        date: sessionDate,
-        originalDate: new Date(sessionDate),
-        interval: interval.key,
-        intervalLabel: interval.label,
-        completed: false,
-        success: null,
-        color: interval.color,
-        rescheduled: sessionDate.getDay() === 1 && interval.days > 0
+  // Sessions futures non terminées, avec horaires calculés (email + notifications).
+  const computeUpcoming = useCallback(() => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const byDay = new Map<string, { courseId: string; sessionId: string; course: string; hours: number; date: Date }[]>();
+    courses.forEach((c) => c.sessions.forEach((s) => {
+      if (s.completed) return;
+      const d = new Date(s.date); d.setHours(0, 0, 0, 0);
+      if (d.getTime() < today.getTime()) return;
+      const k = d.toISOString();
+      if (!byDay.has(k)) byDay.set(k, []);
+      byDay.get(k)!.push({ courseId: c.id, sessionId: s.id, course: c.name, hours: c.hoursPerDay, date: new Date(s.date) });
+    }));
+    const out: { course: string; hours: number; start: Date; end: Date; sessionId: string }[] = [];
+    byDay.forEach((list) => {
+      let cursor = timePrefs.preferredStartHour;
+      list.forEach((it) => {
+        if (cursor < timePrefs.lunchBreakStart && cursor + it.hours > timePrefs.lunchBreakStart) cursor = timePrefs.lunchBreakEnd;
+        const sH = cursor, eH = cursor + it.hours; cursor = eH;
+        const start = new Date(it.date); start.setHours(Math.floor(sH), Math.round((sH % 1) * 60), 0, 0);
+        const end = new Date(it.date); end.setHours(Math.floor(eH), Math.round((eH % 1) * 60), 0, 0);
+        out.push({ course: it.course, hours: it.hours, start, end, sessionId: it.sessionId });
       });
     });
+    return out;
+  }, [courses, timePrefs]);
 
-    return sessions;
+  // Notifications planifiées pour les sessions du jour (remplace l'ancien stub).
+  useEffect(() => {
+    timersRef.current.forEach((id) => clearTimeout(id));
+    timersRef.current = [];
+    if (typeof window === 'undefined' || notificationPermission !== 'granted') return;
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const now = Date.now();
+    computeUpcoming().forEach((u) => {
+      const d = new Date(u.start); d.setHours(0, 0, 0, 0);
+      if (d.getTime() !== today.getTime()) return;
+      const delay = u.start.getTime() - now;
+      if (delay > 0 && delay < 24 * 3600 * 1000) {
+        const id = window.setTimeout(() => {
+          try { new Notification(APP_NAME, { body: `${u.course} · ${u.start.toLocaleTimeString(lang === 'fr' ? 'fr-FR' : 'en-US', { hour: '2-digit', minute: '2-digit' })}` }); } catch {}
+        }, delay);
+        timersRef.current.push(id);
+      }
+    });
+    return () => { timersRef.current.forEach((id) => clearTimeout(id)); };
+  }, [computeUpcoming, notificationPermission, lang]);
+
+  // ---- Course / session operations ---------------------------------------
+  const addCourse = (name: string, hours: number, startDate: Date | null) => {
+    const sessions = generateSessions(startDate || new Date()) as Session[];
+    setCourses((p) => [...p, { id: newId(), name, hoursPerDay: hours, createdAt: new Date(), sessions }]);
   };
 
-  const createNewCourse = (name: string, hoursPerDay: number, startDate: Date = new Date()): Course => {
-    const sessions = createCourseSessions(name, startDate);
+  const deleteCourse = (id: string) => setCourses((p) => p.filter((c) => c.id !== id));
 
-    return {
-      id: Date.now(),
-      name: name,
-      hoursPerDay: hoursPerDay,
-      createdAt: new Date(),
-      sessions: sessions,
-      totalSessions: sessions.length,
-      completedSessions: 0
+  const updateCourseHours = (id: string, delta: number) =>
+    setCourses((p) => p.map((c) => c.id === id ? { ...c, hoursPerDay: Math.max(0.5, Math.round((c.hoursPerDay + delta) * 2) / 2) } : c));
+
+  const markSession = (courseId: string, sessionId: string, success: boolean) =>
+    setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: engineMark(c.sessions, sessionId, success) } : c));
+
+  const deleteSession = (courseId: string, sessionId: string) =>
+    setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.filter((s) => s.id !== sessionId) } : c).filter((c) => c.sessions.length > 0));
+
+  const moveSession = (courseId: string, sessionId: string, newDate: Date) =>
+    setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.map((s) => s.id === sessionId ? { ...s, date: new Date(newDate), rescheduled: true } : s) } : c));
+
+  // Déplacement clavier-accessible (±1 jour, saute le dimanche).
+  const moveByDays = (courseId: string, sessionId: string, from: Date, delta: number) => {
+    const d = new Date(from); d.setDate(d.getDate() + delta);
+    if (d.getDay() === 0) d.setDate(d.getDate() + (delta > 0 ? 1 : -1));
+    moveSession(courseId, sessionId, d);
+  };
+
+  const rescheduleAll = () => {
+    let total = 0;
+    setCourses((p) => p.map((c) => { const r = rescheduleOverdue(c.sessions); total += r.count; return { ...c, sessions: r.sessions }; }));
+    say(total ? t('planning.overdue.done', { n: total }) : t('planning.overdue.none'));
+  };
+
+  const addConstraintObj = (date: Date, endDate: Date | null, allDay: boolean, startHour: number, endHour: number, description = '') =>
+    setConstraints((p) => [...p, { id: newId(), date, endDate, allDay, startHour, endHour, description }]);
+
+  const deleteConstraint = (id: string) => setConstraints((p) => p.filter((c) => c.id !== id));
+
+  // ---- Data export / import (#4) -----------------------------------------
+  const exportData = () => {
+    const payload = {
+      app: 'MémoMed', version: 1, exportedAt: new Date().toISOString(),
+      courses: courses.map((c) => ({ ...c, createdAt: c.createdAt.toISOString(), sessions: c.sessions.map((s) => ({ ...s, date: s.date.toISOString(), originalDate: s.originalDate.toISOString() })) })),
+      constraints: constraints.map((c) => ({ ...c, date: c.date.toISOString(), endDate: c.endDate ? c.endDate.toISOString() : null })),
     };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `memomed-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const deleteSession = (courseId: number, sessionId: string): void => {
-    const updatedCourses = courses.map(course => {
-      if (course.id === courseId) {
-        const updatedSessions = course.sessions.filter(session => session.id !== sessionId);
-        return {
-          ...course,
-          sessions: updatedSessions,
-          totalSessions: updatedSessions.length,
-          completedSessions: updatedSessions.filter(s => s.completed).length
-        };
-      }
-      return course;
-    }).filter(course => course.sessions.length > 0);
-
-    setCourses(updatedCourses);
+  const importData = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const d = JSON.parse(String(reader.result));
+        if (!Array.isArray(d.courses)) throw new Error();
+        setCourses((d.courses as Record<string, unknown>[]).map((c) => ({
+          id: (c.id as string) ?? newId(), name: c.name as string, hoursPerDay: c.hoursPerDay as number,
+          createdAt: new Date(c.createdAt as string),
+          sessions: ((c.sessions as Record<string, unknown>[]) || []).map((s) => ({
+            id: (s.id as string) ?? newId(), interval: s.interval as string,
+            date: new Date(s.date as string), originalDate: new Date((s.originalDate as string) ?? (s.date as string)),
+            completed: Boolean(s.completed), success: (s.success as boolean | null) ?? null, rescheduled: Boolean(s.rescheduled),
+          })),
+        })));
+        setConstraints(((d.constraints as Record<string, unknown>[]) || []).map((c) => ({
+          id: (c.id as string) ?? newId(), date: new Date(c.date as string), endDate: c.endDate ? new Date(c.endDate as string) : null,
+          allDay: c.allDay !== false, startHour: (c.startHour as number) ?? 0, endHour: (c.endHour as number) ?? 24, description: (c.description as string) ?? '',
+        })));
+        say(t('data.imported', { courses: (d.courses || []).length, constraints: (d.constraints || []).length }));
+      } catch { say(t('data.importError')); }
+    };
+    reader.readAsText(file);
   };
 
-  const moveSession = (courseId: number, sessionId: string, newDate: Date): void => {
-    const updatedCourses = courses.map(course => {
-      if (course.id === courseId) {
-        const updatedSessions = course.sessions.map(session => {
-          if (session.id === sessionId) {
-            return {
-              ...session,
-              date: new Date(newDate),
-              rescheduled: true
-            };
-          }
-          return session;
+  // ---- Assistant ----------------------------------------------------------
+  const dispatch = (text: string) => {
+    const intent = parseCommand(text, lang);
+    const dfmt = (d: Date) => d.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US');
+    switch (intent.action) {
+      case 'help': return t('assistant.helpText');
+      case 'week': {
+        if (!courses.length) return t('assistant.courseEmpty');
+        let out = t('assistant.weekHeader') + '\n';
+        Object.values(getWeeklyPlan(currentWeek)).forEach((d, i) => {
+          out += `\n${dayLabels(lang)[i]} ${d.date.getDate()}/${d.date.getMonth() + 1}: `;
+          out += d.sessions.length ? d.sessions.map((s) => `${s.course} (${s.interval})`).join(', ') : t('assistant.weekRest');
         });
-        return { ...course, sessions: updatedSessions };
+        return out;
       }
-      return course;
-    });
-
-    setCourses(updatedCourses);
+      case 'today': {
+        const today = getTodaySessions();
+        if (!today.length) return t('assistant.weekRest');
+        return today.map((s) => `${s.course} (${s.interval}) — ${s.hours}h`).join('\n');
+      }
+      case 'list_courses':
+        return courses.length ? t('assistant.listCourses', { list: courses.map((c) => c.name).join(', ') }) : t('assistant.noCourses');
+      case 'add_course':
+        addCourse(intent.name, intent.hours, intent.startDate);
+        return t('assistant.added', { name: intent.name, hours: intent.hours });
+      case 'add_constraint':
+        addConstraintObj(intent.date, intent.endDate, intent.allDay, intent.startHour, intent.endHour);
+        return intent.endDate
+          ? t('assistant.constraintRange', { from: dfmt(intent.date), to: dfmt(intent.endDate) })
+          : t('assistant.constraintAdded', { date: dfmt(intent.date) });
+      case 'move_course': {
+        const c = courses.find((x) => x.name.toLowerCase().includes(intent.name.toLowerCase()));
+        if (!c) return t('assistant.moveNotFound');
+        const next = c.sessions.filter((s) => !s.completed).sort((a, b) => a.date.getTime() - b.date.getTime())[0];
+        if (!next) return t('assistant.moveNotFound');
+        moveSession(c.id, next.id, intent.toDate);
+        return t('assistant.moved', { course: c.name, date: dfmt(intent.toDate) });
+      }
+      default:
+        return t('assistant.unknown', { msg: text });
+    }
   };
 
-  const getWeekDates = (weekOffset: number = 0): Date[] => {
-    const today = new Date();
-    const currentDay = today.getDay();
-    const mondayOffset = currentDay === 0 ? -6 : 1 - currentDay;
-
-    const monday = new Date(today);
-    monday.setDate(today.getDate() + mondayOffset + (weekOffset * 7));
-
-    const weekDates = [];
-    for (let i = 0; i < 7; i++) {
-      const date = new Date(monday);
-      date.setDate(monday.getDate() + i);
-      weekDates.push(date);
-    }
-    return weekDates;
-  };
-
-  const getWeeklyPlan = (weekOffset: number = 0): WeeklyPlan => {
-    const weekDates = getWeekDates(weekOffset);
-    const weeklyPlan: WeeklyPlan = {};
-
-    weekDates.forEach((date, index) => {
-      const dayNames = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche'];
-      const dayName = dayNames[index];
-      const dayStart = new Date(date);
-      dayStart.setHours(0, 0, 0, 0);
-
-      const daySessions: WeeklyPlanSession[] = [];
-      let totalHours = 0;
-
-      if (index !== 6) { // Pas dimanche
-        // Regrouper toutes les sessions de ce jour
-        const daySessionsData: {session: Session, course: Course}[] = [];
-
-        courses.forEach(course => {
-          course.sessions.forEach(session => {
-            const sessionDate = new Date(session.date);
-            sessionDate.setHours(0, 0, 0, 0);
-
-            if (sessionDate.getTime() === dayStart.getTime()) {
-              daySessionsData.push({session, course});
-            }
-          });
-        });
-
-        // Trier les sessions par heure (si elle existe) ou par ordre d'ajout
-        daySessionsData.sort((a, b) => {
-          const aHour = a.session.date.getHours() || timePreferences.preferredStartHour;
-          const bHour = b.session.date.getHours() || timePreferences.preferredStartHour;
-          return aHour - bHour;
-        });
-
-        // Calculer les horaires pour chaque session
-        daySessionsData.forEach((sessionData, sessionIndex) => {
-          const {session, course} = sessionData;
-          const {start, end} = calculateOptimalSessionTime(
-            session.date,
-            course.hoursPerDay,
-            sessionIndex,
-            daySessionsData.length
-          );
-
-          daySessions.push({
-            course: course.name,
-            interval: session.interval,
-            intervalLabel: session.intervalLabel,
-            hours: course.hoursPerDay,
-            completed: session.completed,
-            success: session.success,
-            color: session.color,
-            rescheduled: session.rescheduled,
-            startTime: start.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'}),
-            endTime: end.toLocaleTimeString('fr-FR', {hour: '2-digit', minute: '2-digit'})
-          });
-
-          if (!session.completed) {
-            totalHours += course.hoursPerDay;
-          }
-        });
-      }
-
-      weeklyPlan[dayName] = {
-        date: date,
-        sessions: daySessions,
-        totalHours: totalHours
-      };
-    });
-
-    return weeklyPlan;
-  };
-
-  const getTodaySessions = useCallback((): TodaySession[] => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
-    const todaySessions: TodaySession[] = [];
-
-    courses.forEach(course => {
-      course.sessions.forEach(session => {
-        const sessionDate = new Date(session.date);
-        sessionDate.setHours(0, 0, 0, 0);
-
-        if (sessionDate.getTime() === today.getTime() && !session.completed) {
-          todaySessions.push({
-            course: course,
-            session: session,
-            hours: course.hoursPerDay
-          });
-        }
-      });
-    });
-
-    return todaySessions;
-  }, [courses]);
-
-  // Fonction AI Command (version simplifiée pour éviter la longueur)
-  const processAICommand = (message: string): string => {
-    const lowerMsg = message.toLowerCase();
-
-    if (lowerMsg.includes('ajouter') || lowerMsg.includes('nouveau cours')) {
-      const hoursMatch = message.match(/(\d+(?:\.\d+)?)\s*heures?/i);
-      const hours = hoursMatch ? parseFloat(hoursMatch[1]) : 1;
-
-      let courseName = 'Nouveau cours';
-      const nameMatch = message.match(/ajouter\s+(.*?)\s+avec\s+\d/i);
-      if (nameMatch) {
-        courseName = nameMatch[1].trim();
-      }
-
-      const newCourse = createNewCourse(courseName, hours);
-      const updatedCourses = [...courses, newCourse];
-      setCourses(updatedCourses);
-
-      return `✅ Cours "${courseName}" ajouté avec ${hours}h/jour !\n☁️ Sauvegardé automatiquement dans MongoDB\n⏰ Horaires optimisés selon vos préférences (${timePreferences.preferredStartHour}h-${timePreferences.preferredEndHour}h)`;
-    }
-
-    if (lowerMsg.includes('planning') && lowerMsg.includes('semaine')) {
-      if (courses.length === 0) {
-        return `📋 Votre planning hebdomadaire est vide.\n\n🚀 Commencez par ajouter vos premiers cours !`;
-      }
-
-      const weeklyPlan = getWeeklyPlan(currentWeek);
-      let response = `📅 Planning semaine:\n\n`;
-
-      Object.entries(weeklyPlan).forEach(([day, data]) => {
-        response += `${day} ${data.date.getDate()}/${data.date.getMonth() + 1}:\n`;
-
-        if (data.sessions.length === 0) {
-          response += `   Repos - aucune session\n`;
-        } else {
-          data.sessions.forEach(session => {
-            const statusIcon = session.completed ? (session.success ? '✅' : '❌') : '⏳';
-            const timeInfo = session.startTime && session.endTime ? ` (${session.startTime}-${session.endTime})` : '';
-            response += `   ${statusIcon} ${session.course} (${session.intervalLabel}) - ${session.hours}h${timeInfo}\n`;
-          });
-        }
-        response += '\n';
-      });
-
-      return response;
-    }
-
-    if (lowerMsg.includes('aide')) {
-      return `🤖 Commandes disponibles:\n\n📚 COURS :\n• "Ajouter [nom] avec [X] heures par jour"\n\n📋 PLANNING :\n• "Planning de la semaine"\n\n✨ NOUVEAUTÉS :\n• Horaires calculés automatiquement\n• Notifications push intelligentes\n• Invitations calendrier par email\n\n☁️ Toutes vos données sont sauvegardées dans MongoDB Atlas !`;
-    }
-
-    return `🤔 Je comprends que vous voulez "${message}".\n\n💡 Essayez:\n• "Ajouter [cours] avec [heures] heures par jour"\n• "Planning de la semaine"\n• "Aide" pour plus de commandes`;
-  };
-
-  const handleSendMessage = () => {
+  const handleSend = () => {
     if (!inputMessage.trim()) return;
-
-    const userMsg: ChatMessage = { type: 'user', content: inputMessage };
-    const aiResponse: ChatMessage = { type: 'ai', content: processAICommand(inputMessage) };
-
-    setChatMessages([...chatMessages, userMsg, aiResponse]);
+    const msg = inputMessage;
+    setChatMessages((p) => [...p, { type: 'user', content: msg }, { type: 'ai', content: dispatch(msg) }]);
     setInputMessage('');
   };
 
-  // useEffects
-  useEffect(() => {
-    loadData();
-    initializeNotifications();
+  // ---- Planning computation ----------------------------------------------
+  const fmt = (h: number) => `${Math.floor(h)}:${('0' + Math.round((h % 1) * 60)).slice(-2)}`;
 
-    // Charger l'email et préférences sauvegardés
-    const savedEmail = localStorage.getItem('medical_user_email');
-    if (savedEmail) {
-      setUserEmail(savedEmail);
-      setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(savedEmail));
-    }
+  const getWeekDates = (offset: number): Date[] => {
+    const today = new Date();
+    const dow = today.getDay();
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + (dow === 0 ? -6 : 1 - dow) + offset * 7);
+    return Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() + i); return d; });
+  };
 
-    const savedTimePrefs = localStorage.getItem('medical_time_preferences');
-    if (savedTimePrefs) {
-      try {
-        setTimePreferences(JSON.parse(savedTimePrefs));
-      } catch {
-        console.error('Erreur chargement préférences horaires');
+  const getWeeklyPlan = (offset: number): Record<number, DayPlan> => {
+    const plan: Record<number, DayPlan> = {};
+    getWeekDates(offset).forEach((date, idx) => {
+      const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+      const collected: { courseId: string; sessionId: string; course: string; s: Session; hours: number }[] = [];
+      if (idx !== 6) {
+        courses.forEach((c) => c.sessions.forEach((s) => {
+          const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
+          if (sd.getTime() === dayStart.getTime()) collected.push({ courseId: c.id, sessionId: s.id, course: c.name, s, hours: c.hoursPerDay });
+        }));
       }
-    }
-  }, [loadData, initializeNotifications]);
-
-  useEffect(() => {
-    if (courses.length > 0 && !isLoading) {
-      saveCourses(courses);
-    }
-  }, [courses, isLoading, saveCourses]);
-
-  useEffect(() => {
-    if (constraints.length > 0 && !isLoading) {
-      saveConstraints(constraints);
-    }
-  }, [constraints, isLoading, saveConstraints]);
-
-  useEffect(() => {
-    const todayHours = getTodaySessions().reduce((sum, s) => sum + s.hours, 0);
-    const totalCompletedSessions = courses.reduce((sum, course) => sum + course.sessions.filter(s => s.completed).length, 0);
-    const totalSessions = courses.reduce((sum, course) => sum + course.sessions.length, 0);
-
-    setStats({
-      totalCourses: courses.length,
-      todayHours: todayHours,
-      completionRate: totalSessions > 0 ? Math.round((totalCompletedSessions / totalSessions) * 100) : 0
-    });
-  }, [courses, getTodaySessions]);
-
-  useEffect(() => {
-    if (!isLoading && courses.length > 0) {
-      scheduleIntelligentReminders();
-    }
-  }, [courses, isLoading, scheduleIntelligentReminders]);
-
-  useEffect(() => {
-    return () => {
-      activeReminders.forEach(reminderId => {
-        const timerId = parseInt(reminderId.split('-')[1]);
-        clearTimeout(timerId);
+      let cursor = timePrefs.preferredStartHour;
+      let total = 0;
+      const sessions: DaySession[] = collected.map((it) => {
+        if (cursor < timePrefs.lunchBreakStart && cursor + it.hours > timePrefs.lunchBreakStart) cursor = timePrefs.lunchBreakEnd;
+        const start = cursor, end = cursor + it.hours; cursor = end;
+        if (!it.s.completed) total += it.hours;
+        return {
+          courseId: it.courseId, sessionId: it.sessionId, course: it.course, interval: it.s.interval,
+          hours: it.hours, completed: it.s.completed, success: it.s.success, rescheduled: it.s.rescheduled,
+          startTime: fmt(start), endTime: fmt(end),
+        };
       });
-    };
-  }, [activeReminders]);
+      plan[idx] = { date, sessions, totalHours: total };
+    });
+    return plan;
+  };
+
+  const getTodaySessions = () => {
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const out: { course: string; interval: string; hours: number }[] = [];
+    courses.forEach((c) => c.sessions.forEach((s) => {
+      const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
+      if (sd.getTime() === today.getTime() && !s.completed) out.push({ course: c.name, interval: s.interval, hours: c.hoursPerDay });
+    }));
+    return out;
+  };
+
+  const constraintsOnDate = (date: Date) => constraints.filter((k) => {
+    const d0 = new Date(date); d0.setHours(0, 0, 0, 0);
+    const s = new Date(k.date); s.setHours(0, 0, 0, 0);
+    const e = new Date(k.endDate || k.date); e.setHours(0, 0, 0, 0);
+    return d0.getTime() >= s.getTime() && d0.getTime() <= e.getTime();
+  });
+
+  // ---- Stats --------------------------------------------------------------
+  const totalSessions = courses.reduce((a, c) => a + c.sessions.length, 0);
+  const doneSessions = courses.reduce((a, c) => a + c.sessions.filter((s) => s.completed).length, 0);
+  const overdue = courses.reduce((a, c) => a + countOverdue(c.sessions), 0);
+  const todayHours = getTodaySessions().reduce((a, s) => a + s.hours, 0);
+  const completionRate = totalSessions ? Math.round((doneSessions / totalSessions) * 100) : 0;
+
+  // ---- Analytics (#6) -----------------------------------------------------
+  const doneDays = new Set<string>();
+  courses.forEach((c) => c.sessions.forEach((s) => { if (s.completed) { const d = new Date(s.date); d.setHours(0, 0, 0, 0); doneDays.add(d.toDateString()); } }));
+  const streak = (() => {
+    let n = 0; const d = new Date(); d.setHours(0, 0, 0, 0);
+    if (!doneDays.has(d.toDateString())) d.setDate(d.getDate() - 1);
+    while (doneDays.has(d.toDateString())) { n++; d.setDate(d.getDate() - 1); }
+    return n;
+  })();
+  const weekLoad = (() => {
+    const s0 = new Date(); s0.setHours(0, 0, 0, 0); const s1 = new Date(s0); s1.setDate(s0.getDate() + 7);
+    let h = 0; courses.forEach((c) => c.sessions.forEach((x) => { if (!x.completed) { const d = new Date(x.date); d.setHours(0, 0, 0, 0); if (d >= s0 && d < s1) h += c.hoursPerDay; } })); return h;
+  })();
+  const passCount = courses.reduce((a, c) => a + c.sessions.filter((s) => s.completed && s.success).length, 0);
+  const successRate = doneSessions ? Math.round((passCount / doneSessions) * 100) : 0;
+
+  // ---- Email / notifications ---------------------------------------------
+  const initNotifications = async () => {
+    if ('Notification' in window) { const p = await Notification.requestPermission(); setNotificationPermission(p); }
+  };
+  const testNotification = () => { if (notificationPermission === 'granted') new Notification(APP_NAME, { body: 'Test ✓' }); };
+
+  const sendInvitations = async () => {
+    if (!isEmailValid) return;
+    setIsEmailSending(true);
+    try {
+      const times = new Map(computeUpcoming().map((u) => [u.sessionId, u]));
+      const todayStart = new Date(); todayStart.setHours(0, 0, 0, 0);
+      const upcoming: { session: { id: string; date: string; interval: string; intervalLabel: string; start?: string; end?: string }; course: { name: string; hoursPerDay: number } }[] = [];
+      courses.forEach((c) => c.sessions.forEach((s) => {
+        if (s.completed || s.date < todayStart) return;
+        const tm = times.get(s.id);
+        upcoming.push({ session: { id: s.id, date: s.date.toISOString(), interval: s.interval, intervalLabel: s.interval, start: tm?.start.toISOString(), end: tm?.end.toISOString() }, course: { name: c.name, hoursPerDay: c.hoursPerDay } });
+      }));
+      if (!upcoming.length) { say(t('assistant.courseEmpty')); setIsEmailSending(false); return; }
+      const r = await fetch('/api/send-invitations', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ userEmail, sessions: upcoming }) });
+      if (!r.ok) throw new Error();
+      const res = await r.json();
+      say(`✅ ${res.sessionsCount} → ${userEmail}`);
+      localStorage.setItem('memomed_user_email', userEmail);
+    } catch { say('❌ Email error'); } finally { setIsEmailSending(false); }
+  };
+
+  // ---- Drag & drop --------------------------------------------------------
+  const onDrop = (e: React.DragEvent, date: Date) => {
+    e.preventDefault();
+    if (!draggedSession || date.getDay() === 0) { setDraggedSession(null); return; }
+    moveSession(draggedSession.courseId, draggedSession.sessionId, date);
+    setDraggedSession(null);
+  };
+
+  // ---- Render helpers -----------------------------------------------------
+  const Segmented = () => (
+    <div className="flex rounded-lg border border-slate-200 dark:border-slate-700 overflow-hidden text-xs font-medium">
+      {(['fr', 'en'] as Lang[]).map((l) => (
+        <button key={l} onClick={() => setLang(l)}
+          className={`px-3 py-1.5 transition-colors ${lang === l ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
+          {l.toUpperCase()}
+        </button>
+      ))}
+    </div>
+  );
 
   if (isLoading) {
     return (
-      <div className="max-w-7xl mx-auto p-6 bg-gray-50 min-h-screen flex items-center justify-center">
+      <div className="min-h-screen bg-slate-50 dark:bg-slate-900 flex items-center justify-center">
         <div className="text-center">
-          <Brain className="w-16 h-16 text-blue-600 mx-auto mb-4 animate-pulse" />
-          <h2 className="text-2xl font-bold text-gray-800 mb-2">Chargement de vos données...</h2>
-          <p className="text-gray-600">Lecture du stockage local</p>
-          <div className="mt-4 flex justify-center">
-            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-600"></div>
-          </div>
+          <Brain className="w-14 h-14 text-indigo-600 mx-auto mb-4 animate-pulse" />
+          <h2 className="text-xl font-semibold text-slate-800 dark:text-slate-100">{t('loading.title')}</h2>
+          <p className="text-slate-500 dark:text-slate-400 text-sm mt-1">{t('loading.sub')}</p>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="max-w-7xl mx-auto p-6 bg-gray-50 min-h-screen">
-      {/* Header */}
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold text-gray-800 mb-2 flex items-center gap-3">
-          <Brain className="text-blue-600" />
-          Agent IA - Planning Médical
-          {isOnline ? (
-            <span title="Connecté à MongoDB Atlas">
-              <Wifi className="w-5 h-5 text-green-600" />
-            </span>
-          ) : (
-            <span title="Hors ligne - Mode local">
-              <WifiOff className="w-5 h-5 text-red-600" />
-            </span>
-          )}
-        </h1>
-        <p className="text-gray-600">
-          Lundi-Samedi avec horaires optimisés • Dimanche repos • Notifications + Invitations calendrier
-        </p>
-        <div className="text-sm text-gray-500 mt-1 flex items-center gap-4">
-          <span className="flex items-center gap-1">
-            💾 Stockage local
-            {isOnline ? (
-              <span className="text-green-600">✅ Prêt</span>
-            ) : (
-              <span className="text-red-600">⚠️ Indisponible</span>
-            )}
-          </span>
-          {lastSyncTime && (
-            <span>Dernière sync: {lastSyncTime.toLocaleTimeString('fr-FR')}</span>
-          )}
-          <span className="flex items-center gap-1">
-            ⏰ Horaires: {timePreferences.preferredStartHour}h-{timePreferences.preferredEndHour}h
-          </span>
-        </div>
-      </div>
+  const weekPlan = getWeeklyPlan(currentWeek);
 
-      {/* Navigation par onglets */}
-      <div className="mb-6">
-        <div className="border-b border-gray-200">
-          <nav className="-mb-px flex space-x-8">
-            <button
-              onClick={() => setActiveTab('planning')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'planning'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Calendar className="w-4 h-4 inline mr-2" />
-              Planning & Assistant
+  return (
+    <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100">
+      <div className="max-w-7xl mx-auto p-6">
+        {/* Header */}
+        <header className="flex flex-wrap items-center justify-between gap-4 mb-8">
+          <div className="flex items-center gap-3">
+            <div className="w-11 h-11 rounded-xl bg-gradient-to-br from-indigo-600 to-violet-600 flex items-center justify-center shadow-sm">
+              <Brain className="w-6 h-6 text-white" />
+            </div>
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight text-slate-900 dark:text-slate-100">{APP_NAME}</h1>
+              <p className="text-sm text-slate-500 dark:text-slate-400">{t('tagline')}</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={t(theme === 'dark' ? 'theme.light' : 'theme.dark')}
+              className="w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50">
+              {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
             </button>
-            <button
-              onClick={() => setActiveTab('courses')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'courses'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <BookOpen className="w-4 h-4 inline mr-2" />
-              Gestion des Cours
-              {courses.length > 0 && (
-                <span className="ml-1 bg-blue-100 text-blue-600 text-xs px-2 py-0.5 rounded-full">
-                  {courses.length}
-                </span>
+            <Segmented />
+            <div className="flex items-center gap-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2">
+              {isOnline ? <Wifi className="w-3.5 h-3.5 text-emerald-500" /> : <WifiOff className="w-3.5 h-3.5 text-rose-500" />}
+              <span className="text-slate-600 dark:text-slate-300">{t('status.local')}</span>
+              <span className={isOnline ? 'text-emerald-600' : 'text-rose-600'}>{isOnline ? t('status.ready') : t('status.unavailable')}</span>
+              {lastSyncTime && <span className="text-slate-400 dark:text-slate-500 hidden sm:inline">· {lastSyncTime.toLocaleTimeString(lang === 'fr' ? 'fr-FR' : 'en-US')}</span>}
+            </div>
+          </div>
+        </header>
+
+        {/* Tabs */}
+        <nav className="flex gap-2 mb-6">
+          {([['planning', Calendar], ['courses', BookOpen], ['settings', SettingsIcon]] as const).map(([tab, Icon]) => (
+            <button key={tab} onClick={() => setActiveTab(tab)}
+              className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
+              <Icon className="w-4 h-4" /> {t(`nav.${tab}`)}
+              {tab === 'courses' && courses.length > 0 && (
+                <span className={`ml-1 text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab ? 'bg-white/20' : 'bg-indigo-100 text-indigo-700'}`}>{courses.length}</span>
               )}
             </button>
-            <button
-              onClick={() => setActiveTab('settings')}
-              className={`py-2 px-1 border-b-2 font-medium text-sm transition-colors ${
-                activeTab === 'settings'
-                  ? 'border-blue-500 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-              }`}
-            >
-              <Settings className="w-4 h-4 inline mr-2" />
-              Configuration
-            </button>
-          </nav>
-        </div>
-      </div>
+          ))}
+        </nav>
 
-      {/* Statistiques */}
-      <div className="grid grid-cols-3 gap-4 mb-6">
-        <div className="bg-white p-4 rounded-lg shadow-sm border">
-          <div className="flex items-center gap-2 mb-2">
-            <Calendar className="w-5 h-5 text-blue-600" />
-            <span className="text-sm font-medium">Cours</span>
+        {/* Stats */}
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+          {[
+            { icon: BookOpen, color: 'text-indigo-600', label: t('stats.courses'), value: courses.length },
+            { icon: Clock, color: 'text-emerald-600', label: t('stats.today'), value: `${todayHours}h` },
+            { icon: CheckCircle2, color: 'text-violet-600', label: t('stats.progress'), value: `${completionRate}%` },
+            { icon: AlertTriangle, color: overdue ? 'text-rose-600' : 'text-slate-400 dark:text-slate-500', label: t('stats.overdue'), value: overdue },
+          ].map((s, i) => (
+            <div key={i} className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
+              <div className="flex items-center gap-2 mb-1"><s.icon className={`w-4 h-4 ${s.color}`} /><span className="text-xs font-medium text-slate-500 dark:text-slate-400">{s.label}</span></div>
+              <div className="text-2xl font-bold text-slate-900 dark:text-slate-100">{s.value}</div>
+            </div>
+          ))}
+        </div>
+
+        {/* Analytics strip */}
+        {courses.length > 0 && (
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 px-4 py-3 mb-6 flex flex-wrap items-center gap-x-8 gap-y-2 text-sm">
+            <span className="text-xs font-semibold text-slate-400 dark:text-slate-500 uppercase tracking-wide">{t('analytics.title')}</span>
+            <span className="flex items-center gap-1.5"><Flame className="w-4 h-4 text-orange-500" /> {t('analytics.streak')}: <b>{streak}</b> {t('analytics.streakDays')}</span>
+            <span className="flex items-center gap-1.5"><TrendingUp className="w-4 h-4 text-indigo-500" /> {t('analytics.week')}: <b>{weekLoad}h</b></span>
+            <span className="flex items-center gap-1.5"><CheckCircle2 className="w-4 h-4 text-emerald-500" /> {t('analytics.success')}: <b>{successRate}%</b></span>
           </div>
-          <div className="text-2xl font-bold text-gray-800">{stats.totalCourses}</div>
-        </div>
+        )}
 
-        <div className="bg-white p-4 rounded-lg shadow-sm border">
-          <div className="flex items-center gap-2 mb-2">
-            <Clock className="w-5 h-5 text-green-600" />
-            <span className="text-sm font-medium">Aujourd&apos;hui</span>
-          </div>
-          <div className="text-2xl font-bold text-gray-800">{stats.todayHours}h</div>
-        </div>
-
-        <div className="bg-white p-4 rounded-lg shadow-sm border">
-          <div className="flex items-center gap-2 mb-2">
-            <CheckCircle2 className="w-5 h-5 text-purple-600" />
-            <span className="text-sm font-medium">Progression</span>
-          </div>
-          <div className="text-2xl font-bold text-gray-800">{stats.completionRate}%</div>
-        </div>
-      </div>
-
-      {/* Contenu selon l'onglet actif */}
-      {activeTab === 'planning' && (
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Planning Hebdomadaire avec HORAIRES */}
-          <div className="lg:col-span-2">
-            <div className="bg-white rounded-lg shadow-sm border mb-6">
-              <div className="p-6 border-b flex items-center justify-between">
-                <h2 className="text-xl font-semibold text-gray-800 flex items-center gap-2">
-                  <Calendar className="w-5 h-5" />
-                  Planning Hebdomadaire avec Horaires
-                </h2>
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => setCurrentWeek(currentWeek - 1)}
-                    className="p-2 hover:bg-gray-100 rounded transition-colors"
-                  >
-                    <ChevronLeft className="w-4 h-4" />
-                  </button>
-                  <span className="text-sm font-medium px-3">
-                    {currentWeek === 0 ? 'Cette semaine' :
-                     currentWeek > 0 ? `+${currentWeek} semaine${currentWeek > 1 ? 's' : ''}` :
-                     `${Math.abs(currentWeek)} semaine${Math.abs(currentWeek) > 1 ? 's' : ''} passée${Math.abs(currentWeek) > 1 ? 's' : ''}`}
-                  </span>
-                  <button
-                    onClick={() => setCurrentWeek(currentWeek + 1)}
-                    className="p-2 hover:bg-gray-100 rounded transition-colors"
-                  >
-                    <ChevronRight className="w-4 h-4" />
-                  </button>
+        {/* PLANNING TAB */}
+        {activeTab === 'planning' && (
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="lg:col-span-2">
+              <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+                <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                  <h2 className="text-lg font-semibold flex items-center gap-2"><Calendar className="w-5 h-5 text-indigo-600" /> {t('planning.title')}</h2>
+                  <div className="flex items-center gap-2">
+                    {overdue > 0 && (
+                      <button onClick={rescheduleAll} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100">
+                        <RefreshCw className="w-3.5 h-3.5" /> {overdue}
+                      </button>
+                    )}
+                    <button onClick={() => setCurrentWeek(currentWeek - 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronLeft className="w-4 h-4" /></button>
+                    <span className="text-sm font-medium px-2 min-w-[90px] text-center">{currentWeek === 0 ? t('planning.thisWeek') : (currentWeek > 0 ? `+${currentWeek}` : currentWeek)}</span>
+                    <button onClick={() => setCurrentWeek(currentWeek + 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronRight className="w-4 h-4" /></button>
+                  </div>
                 </div>
-              </div>
-
-              <div className="grid grid-cols-1 md:grid-cols-7 divide-x divide-gray-200">
-                {Object.entries(getWeeklyPlan(currentWeek)).map(([dayName, dayData]) => {
-                  const isToday = dayData.date.toDateString() === new Date().toDateString();
-                  const isOverloaded = dayData.totalHours > workingHours.availableHours;
-                  const isSunday = dayData.date.getDay() === 0;
-
-                  return (
-                    <div
-                      key={dayName}
-                      className={`p-4 ${isToday ? 'bg-blue-50 border-blue-200' : ''} ${isOverloaded ? 'bg-red-50' : ''} ${isSunday ? 'bg-green-50' : ''} min-h-[250px]`}
-                      onDragOver={!isSunday ? handleDragOver : undefined}
-                      onDrop={!isSunday ? (e) => handleDrop(e, dayData.date) : undefined}
-                    >
-                      <div className="mb-2">
-                        <h3 className={`font-medium ${isToday ? 'text-blue-800' : isOverloaded ? 'text-red-800' : isSunday ? 'text-green-800' : 'text-gray-800'}`}>
-                          {dayName}
-                          {isToday && ' 👉'}
-                        </h3>
-                        <p className="text-xs text-gray-600">
-                          {dayData.date.getDate()}/{dayData.date.getMonth() + 1}
-                        </p>
-                        {!isSunday && (
-                          <p className="text-xs text-gray-400 mt-1">📋 Glissez ici pour déplacer</p>
-                        )}
-                      </div>
-
-                      {dayData.sessions.length === 0 && !isSunday ? (
-                        <p className="text-xs text-gray-400 italic">Repos</p>
-                      ) : isSunday ? (
-                        <>
-                          <p className="text-xs text-green-600 italic">🛌 Repos automatique</p>
-                          <div className="text-xs font-medium mt-2 text-green-600">
-                            📊 Total: 0h
-                          </div>
-                        </>
-                      ) : (
-                        <div className="space-y-2">
-                          {dayData.sessions.map((session, idx) => {
-                            const correspondingCourse = courses.find(c => c.name === session.course);
-                            const correspondingSession = correspondingCourse?.sessions.find(s =>
-                              s.interval === session.interval &&
-                              s.date.toDateString() === dayData.date.toDateString()
-                            );
-
-                            return (
-                              <div
-                                key={idx}
-                                className={`relative group text-xs p-2 rounded ${session.color} ${session.completed ? 'opacity-60' : ''} ${!session.completed ? 'cursor-move' : ''}`}
-                                draggable={!session.completed}
-                                onDragStart={correspondingCourse && correspondingSession && !session.completed ?
-                                  (e) => handleDragStart(e, correspondingCourse.id, correspondingSession.id, session.course, session.interval, session.hours) :
-                                  undefined
-                                }
-                                title={!session.completed ? "Glissez pour déplacer cette session" : "Session terminée"}
-                              >
-                                <div className="font-medium truncate flex items-center gap-1">
-                                  {!session.completed && <span className="text-xs opacity-50">⋮⋮</span>}
-                                  {session.course}
+                <div className="grid grid-cols-1 md:grid-cols-7 divide-y md:divide-y-0 md:divide-x divide-slate-100">
+                  {Object.entries(weekPlan).map(([k, day]) => {
+                    const idx = Number(k);
+                    const isToday = day.date.toDateString() === new Date().toDateString();
+                    const isSunday = idx === 6;
+                    const overloaded = day.totalHours > availableHours;
+                    const dayConstraints = constraintsOnDate(day.date);
+                    return (
+                      <div key={k}
+                        onDragOver={!isSunday ? (e) => e.preventDefault() : undefined}
+                        onDrop={!isSunday ? (e) => onDrop(e, day.date) : undefined}
+                        className={`p-3 min-h-[220px] ${isToday ? 'bg-indigo-50/60' : isSunday ? 'bg-emerald-50/40' : ''}`}>
+                        <div className="mb-2">
+                          <h3 className={`text-sm font-semibold ${isToday ? 'text-indigo-700' : 'text-slate-700 dark:text-slate-200'}`}>{dayLabels(lang)[idx]}{isToday && ' •'}</h3>
+                          <p className="text-xs text-slate-400 dark:text-slate-500">{day.date.getDate()}/{day.date.getMonth() + 1}</p>
+                          {dayConstraints.map((c) => (
+                            <div key={c.id} className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 truncate">
+                              ⚠ {c.allDay ? t('constraints.allDay') : `${c.startHour}h–${c.endHour}h`}
+                            </div>
+                          ))}
+                        </div>
+                        {isSunday ? (
+                          <p className="text-xs text-emerald-600 italic">🌙 {t('planning.restAuto')}</p>
+                        ) : day.sessions.length === 0 ? (
+                          <p className="text-xs text-slate-300 dark:text-slate-600 italic">{t('planning.rest')}</p>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {day.sessions.map((s) => (
+                              <div key={s.sessionId} draggable={!s.completed}
+                                onDragStart={() => setDraggedSession({ courseId: s.courseId, sessionId: s.sessionId })}
+                                className={`group relative text-xs p-2 rounded-lg border ${colorFor(s.interval)} ${s.completed ? 'opacity-50' : 'cursor-move'}`}>
+                                <div className="font-semibold truncate flex items-center gap-1">
+                                  {s.completed && (s.success ? <Check className="w-3 h-3 text-emerald-600" /> : <X className="w-3 h-3 text-rose-600" />)}
+                                  {s.course}
                                 </div>
-                                <div className="flex justify-between items-center">
-                                  <span>{session.intervalLabel}</span>
-                                  <span className="font-medium">{session.hours}h</span>
+                                <div className="flex justify-between items-center mt-0.5">
+                                  <span className="opacity-80">{s.interval}</span><span className="font-medium">{s.hours}h</span>
                                 </div>
-                                {/* NOUVEAU : Affichage des heures */}
-                                {session.startTime && session.endTime && (
-                                  <div className="mt-1 text-xs font-mono bg-black bg-opacity-10 rounded px-1">
-                                    ⏰ {session.startTime}-{session.endTime}
-                                  </div>
-                                )}
-                                {session.rescheduled && (
-                                  <div className="mt-1 text-orange-600">🔄 Reporté</div>
-                                )}
-
-                                {correspondingCourse && correspondingSession && !session.completed && (
-                                  <div className="absolute -top-1 -right-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                                    <button
-                                      onClick={() => {
-                                        const confirmDelete = window.confirm(`Supprimer la session ${session.intervalLabel} de "${session.course}" du ${dayData.date.toLocaleDateString('fr-FR')} ?`);
-                                        if (confirmDelete) {
-                                          deleteSession(correspondingCourse.id, correspondingSession.id);
-                                        }
-                                      }}
-                                      className="w-4 h-4 bg-red-500 hover:bg-red-600 text-white rounded-full text-xs flex items-center justify-center z-10"
-                                      title="Supprimer cette session"
-                                    >
-                                      ×
-                                    </button>
-                                  </div>
+                                <div className="text-[10px] font-mono mt-0.5 opacity-70">⏰ {s.startTime}–{s.endTime}</div>
+                                {s.rescheduled && <div className="text-[10px] text-orange-600 mt-0.5">↻ {t('planning.rescheduled')}</div>}
+                                {!s.completed && (
+                                  <>
+                                    <div className="absolute top-1 left-1 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+                                      <button title={t('session.moveLeft')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, -1)} className="w-5 h-5 rounded bg-slate-600/85 hover:bg-slate-700 text-white flex items-center justify-center"><ChevronLeft className="w-3 h-3" /></button>
+                                      <button title={t('session.moveRight')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, 1)} className="w-5 h-5 rounded bg-slate-600/85 hover:bg-slate-700 text-white flex items-center justify-center"><ChevronRight className="w-3 h-3" /></button>
+                                    </div>
+                                    <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
+                                      <button title={t('session.markPass')} onClick={() => markSession(s.courseId, s.sessionId, true)} className="w-5 h-5 rounded bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center"><Check className="w-3 h-3" /></button>
+                                      <button title={t('session.markFail')} onClick={() => markSession(s.courseId, s.sessionId, false)} className="w-5 h-5 rounded bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center"><RefreshCw className="w-3 h-3" /></button>
+                                      <button title={t('session.delete')} onClick={() => { if (confirm(t('session.confirmDelete', { interval: s.interval, course: s.course }))) deleteSession(s.courseId, s.sessionId); }} className="w-5 h-5 rounded bg-rose-500 hover:bg-rose-600 text-white flex items-center justify-center"><X className="w-3 h-3" /></button>
+                                    </div>
+                                  </>
                                 )}
                               </div>
-                            );
-                          })}
-                          <div className={`text-xs font-medium mt-2 ${isOverloaded ? 'text-red-600' : 'text-blue-600'}`}>
-                            📊 Total: {dayData.totalHours}h
+                            ))}
+                            <div className={`text-xs font-medium mt-1 ${overloaded ? 'text-rose-600' : 'text-slate-500 dark:text-slate-400'}`}>{t('planning.total')}: {day.totalHours}h</div>
                           </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Assistant */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 flex flex-col">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800">
+                <h2 className="font-semibold flex items-center gap-2">💬 {t('assistant.title')}</h2>
+                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{t('assistant.subtitle')}</p>
+              </div>
+              <div className="h-80 overflow-y-auto p-4 space-y-3">
+                {chatMessages.map((m, i) => (
+                  <div key={i} className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}>
+                    <div className={`max-w-[85%] p-2.5 rounded-lg text-sm whitespace-pre-line ${m.type === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200'}`}>{m.content}</div>
+                  </div>
+                ))}
+              </div>
+              <div className="p-4 border-t border-slate-100 dark:border-slate-800">
+                <div className="flex gap-2 mb-3">
+                  <input value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+                    placeholder={t('assistant.placeholder')} className="flex-1 p-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                  <button onClick={handleSend} className="px-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"><Plus className="w-4 h-4" /></button>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  <button onClick={() => setInputMessage(lang === 'fr' ? 'Ajouter Anatomie avec 2 heures par jour' : 'Add Anatomy with 2 hours per day')} className="text-xs p-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-indigo-700">➕ {t('assistant.newCourse')}</button>
+                  <button onClick={() => setInputMessage(lang === 'fr' ? 'Planning de la semaine' : 'Week plan')} className="text-xs p-2 bg-violet-50 hover:bg-violet-100 rounded-lg text-violet-700">📅 {t('assistant.week')}</button>
+                  <button onClick={() => setInputMessage(lang === 'fr' ? 'Aide' : 'Help')} className="text-xs p-2 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-emerald-700">❓ {t('assistant.help')}</button>
+                  <button onClick={() => setActiveTab('settings')} className="text-xs p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300">⚙️ {t('assistant.config')}</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* COURSES TAB */}
+        {activeTab === 'courses' && (
+          <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+            <h2 className="text-lg font-semibold mb-4">{t('courses.title')}</h2>
+            {courses.length === 0 ? (
+              <div className="text-center py-12">
+                <BookOpen className="w-12 h-12 text-slate-200 mx-auto mb-3" />
+                <p className="text-slate-500 dark:text-slate-400">{t('courses.empty')}</p>
+                <button onClick={() => setActiveTab('planning')} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">💬 {t('courses.emptyCta')}</button>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {courses.map((c) => {
+                  const done = c.sessions.filter((s) => s.completed).length;
+                  const pct = c.sessions.length ? Math.round((done / c.sessions.length) * 100) : 0;
+                  const upcoming = c.sessions.filter((s) => !s.completed).sort((a, b) => a.date.getTime() - b.date.getTime()).slice(0, 4);
+                  return (
+                    <div key={c.id} className="border border-slate-200 dark:border-slate-700 rounded-xl p-4">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-slate-900 dark:text-slate-100 truncate">{c.name}</h3>
+                          <p className="text-xs text-slate-500 dark:text-slate-400">{done}/{c.sessions.length} {t('courses.done')} · {pct}%</p>
+                        </div>
+                        <div className="flex items-center gap-3">
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-xs text-slate-500 dark:text-slate-400">{t('courses.hours')}</span>
+                            <button onClick={() => updateCourseHours(c.id, -0.5)} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 flex items-center justify-center"><Minus className="w-3 h-3" /></button>
+                            <span className="w-8 text-center text-sm font-medium">{c.hoursPerDay}h</span>
+                            <button onClick={() => updateCourseHours(c.id, 0.5)} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 flex items-center justify-center"><Plus className="w-3 h-3" /></button>
+                          </div>
+                          <button onClick={() => { if (confirm(t('courses.confirmDelete', { name: c.name }))) deleteCourse(c.id); }} title={t('courses.delete')} className="w-8 h-8 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>
+                        </div>
+                      </div>
+                      <div className="mt-3 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden"><div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${pct}%` }} /></div>
+                      {upcoming.length > 0 && (
+                        <div className="mt-3 flex flex-wrap gap-2">
+                          {upcoming.map((s) => (
+                            <div key={s.id} className={`text-xs px-2 py-1 rounded-lg border flex items-center gap-1.5 ${colorFor(s.interval)}`}>
+                              <span>{s.interval} · {s.date.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US', { day: '2-digit', month: '2-digit' })}</span>
+                              <button onClick={() => markSession(c.id, s.id, true)} className="hover:text-emerald-700" title={t('session.markPass')}><Check className="w-3 h-3" /></button>
+                              <button onClick={() => markSession(c.id, s.id, false)} className="hover:text-amber-700" title={t('session.markFail')}><RefreshCw className="w-3 h-3" /></button>
+                            </div>
+                          ))}
                         </div>
                       )}
                     </div>
                   );
                 })}
               </div>
-            </div>
+            )}
           </div>
+        )}
 
-          {/* Assistant IA */}
-          <div className="bg-white rounded-lg shadow-sm border">
-            <div className="p-4 border-b">
-              <h2 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
-                🤖 Assistant IA
-                {isOnline ? (
-                  <span className="text-xs text-green-600">☁️ MongoDB</span>
-                ) : (
-                  <span className="text-xs text-red-600">📱 Local</span>
-                )}
-              </h2>
-              <p className="text-xs text-gray-600">Horaires optimisés • Notifications • Invitations calendrier</p>
+        {/* SETTINGS TAB */}
+        {activeTab === 'settings' && (
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Language */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <h2 className="font-semibold mb-4 flex items-center gap-2"><SettingsIcon className="w-4 h-4 text-indigo-600" /> {t('settings.language')}</h2>
+              <Segmented />
             </div>
 
-            <div className="h-96 overflow-y-auto p-4 space-y-4">
-              {chatMessages.map((msg, index) => (
-                <div key={index} className={`flex ${msg.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                  <div className={`max-w-xs p-3 rounded-lg ${
-                    msg.type === 'user'
-                      ? 'bg-blue-600 text-white'
-                      : 'bg-gray-100 text-gray-800'
-                  }`}>
-                    <div className="text-sm whitespace-pre-line">{msg.content}</div>
+            {/* Data & backup */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <h2 className="font-semibold mb-2 flex items-center gap-2"><Download className="w-4 h-4 text-indigo-600" /> {t('data.title')}</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">{t('data.desc')}</p>
+              <div className="flex flex-wrap gap-2">
+                <button onClick={exportData} className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700"><Download className="w-4 h-4" /> {t('data.export')}</button>
+                <button onClick={() => importRef.current?.click()} className="flex items-center gap-2 px-4 py-2 bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg text-sm hover:bg-slate-200 dark:hover:bg-slate-600"><Upload className="w-4 h-4" /> {t('data.import')}</button>
+                <input ref={importRef} type="file" accept="application/json,.json" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) importData(f); e.target.value = ''; }} />
+              </div>
+            </div>
+
+            {/* Time prefs */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <h2 className="font-semibold mb-4 flex items-center gap-2"><Clock className="w-4 h-4 text-indigo-600" /> {t('settings.hours.title')}</h2>
+              <div className="grid grid-cols-2 gap-4">
+                <label className="text-sm">{t('settings.hours.start')}
+                  <select value={timePrefs.preferredStartHour} onChange={(e) => setTimePrefs((p) => ({ ...p, preferredStartHour: +e.target.value }))} className="mt-1 w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg">
+                    {Array.from({ length: 12 }, (_, i) => i + 6).map((h) => <option key={h} value={h}>{h}h00</option>)}
+                  </select>
+                </label>
+                <label className="text-sm">{t('settings.hours.end')}
+                  <select value={timePrefs.preferredEndHour} onChange={(e) => setTimePrefs((p) => ({ ...p, preferredEndHour: +e.target.value }))} className="mt-1 w-full p-2 border border-slate-200 dark:border-slate-700 rounded-lg">
+                    {Array.from({ length: 10 }, (_, i) => i + 15).map((h) => <option key={h} value={h}>{h}h00</option>)}
+                  </select>
+                </label>
+              </div>
+              <button onClick={() => { localStorage.setItem('memomed_time_prefs', JSON.stringify(timePrefs)); say(t('settings.saved')); }} className="mt-4 w-full py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">{t('settings.save')}</button>
+            </div>
+
+            {/* Constraints */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 lg:col-span-2">
+              <h2 className="font-semibold mb-4 flex items-center gap-2"><AlertTriangle className="w-4 h-4 text-amber-500" /> {t('constraints.title')}</h2>
+              <div className="flex flex-wrap items-end gap-3 mb-4">
+                <label className="text-sm">{t('constraints.date')}
+                  <input type="date" value={ncDate} onChange={(e) => setNcDate(e.target.value)} className="mt-1 block p-2 border border-slate-200 dark:border-slate-700 rounded-lg" />
+                </label>
+                <label className="text-sm flex items-center gap-2 pb-2"><input type="checkbox" checked={ncAllDay} onChange={(e) => setNcAllDay(e.target.checked)} /> {t('constraints.allDay')}</label>
+                {!ncAllDay && (
+                  <div className="flex items-end gap-1 text-sm">
+                    <label>{t('constraints.from')}<select value={ncFrom} onChange={(e) => setNcFrom(+e.target.value)} className="mt-1 block p-2 border border-slate-200 dark:border-slate-700 rounded-lg">{Array.from({ length: 18 }, (_, i) => i + 6).map((h) => <option key={h} value={h}>{h}h</option>)}</select></label>
+                    <span className="pb-2">{t('constraints.to')}</span>
+                    <select value={ncTo} onChange={(e) => setNcTo(+e.target.value)} className="p-2 border border-slate-200 dark:border-slate-700 rounded-lg">{Array.from({ length: 18 }, (_, i) => i + 7).map((h) => <option key={h} value={h}>{h}h</option>)}</select>
                   </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="p-4 border-t">
-              <div className="flex gap-2 mb-3">
-                <input
-                  type="text"
-                  value={inputMessage}
-                  onChange={(e) => setInputMessage(e.target.value)}
-                  onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
-                  placeholder="Ajouter cours ou contrainte..."
-                  className="flex-1 p-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                />
-                <button
-                  onClick={handleSendMessage}
-                  className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-                >
-                  <Plus className="w-4 h-4" />
-                </button>
+                )}
+                <input value={ncDesc} onChange={(e) => setNcDesc(e.target.value)} placeholder={t('constraints.descPlaceholder')} className="text-sm p-2 border border-slate-200 dark:border-slate-700 rounded-lg flex-1 min-w-[160px]" />
+                <button disabled={!ncDate} onClick={() => { const d = new Date(ncDate + 'T00:00:00'); addConstraintObj(d, null, ncAllDay, ncAllDay ? 0 : ncFrom, ncAllDay ? 24 : ncTo, ncDesc); setNcDate(''); setNcDesc(''); }} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:bg-slate-300">{t('constraints.add')}</button>
               </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  onClick={() => setInputMessage('Ajouter Anatomie avec 2 heures par jour')}
-                  className="text-xs p-2 bg-blue-50 hover:bg-blue-100 rounded border text-blue-700"
-                >
-                  ➕ Nouveau cours
-                </button>
-                <button
-                  onClick={() => setInputMessage('Planning de la semaine')}
-                  className="text-xs p-2 bg-purple-50 hover:bg-purple-100 rounded border text-purple-700"
-                >
-                  📅 Semaine
-                </button>
-                <button
-                  onClick={() => setInputMessage('Aide')}
-                  className="text-xs p-2 bg-green-50 hover:bg-green-100 rounded border text-green-700"
-                >
-                  ❓ Aide
-                </button>
-                <button
-                  onClick={() => setActiveTab('settings')}
-                  className="text-xs p-2 bg-orange-50 hover:bg-orange-100 rounded border text-orange-700"
-                >
-                  ⚙️ Config
-                </button>
-              </div>
-
-              <div className="mt-3 p-2 bg-gray-50 rounded text-xs">
-                <div className="font-medium text-gray-700 mb-1 flex items-center gap-2">
-                  🛌 Dimanche repos • ⏰ Horaires auto • 🔔 Notifications
-                  {isOnline ? (
-                    <span className="text-green-600">☁️ MongoDB sync</span>
-                  ) : (
-                    <span className="text-red-600">📱 Mode local</span>
-                  )}
+              {constraints.length === 0 ? <p className="text-sm text-slate-400 dark:text-slate-500">{t('constraints.none')}</p> : (
+                <div className="space-y-2">
+                  {constraints.slice().sort((a, b) => a.date.getTime() - b.date.getTime()).map((c) => (
+                    <div key={c.id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-700/50 rounded-lg text-sm">
+                      <span>⚠ {c.date.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}{c.endDate ? ` → ${c.endDate.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}` : ''} · {c.allDay ? t('constraints.allDay') : `${c.startHour}h–${c.endHour}h`}{c.description ? ` · ${c.description}` : ''}</span>
+                      <button onClick={() => deleteConstraint(c.id)} className="text-rose-500 hover:text-rose-700"><Trash2 className="w-4 h-4" /></button>
+                    </div>
+                  ))}
                 </div>
-                <div className="text-gray-600">
-                  📧 Invitations calendrier + 📱 Notifications push activées
-                </div>
-                <div className="mt-1 text-blue-600">
-                  ⏰ Créneaux: {timePreferences.preferredStartHour}h-{timePreferences.preferredEndHour}h
-                  • Pause: {timePreferences.lunchBreakStart}h-{timePreferences.lunchBreakEnd}h
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {activeTab === 'courses' && (
-        <div className="bg-white rounded-lg shadow-sm border p-12 text-center">
-          <BookOpen className="w-16 h-16 text-gray-300 mx-auto mb-4" />
-          <h3 className="text-xl font-medium text-gray-800 mb-2">Gestion des cours</h3>
-          <p className="text-gray-600 mb-6">Ajoutez des cours depuis l assistant IA pour les gérer ici</p>
-          <button
-            onClick={() => setActiveTab('planning')}
-            className="px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium"
-          >
-            🤖 Aller à l Assistant IA
-          </button>
-        </div>
-      )}
-
-      {activeTab === 'settings' && (
-        <div className="space-y-6">
-          {/* Configuration Email */}
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-6">📧 Invitations Calendrier</h2>
-
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Votre email
-                </label>
-                <input
-                  type="email"
-                  value={userEmail}
-                  onChange={(e) => {
-                    setUserEmail(e.target.value);
-                    const valid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.target.value);
-                    setIsEmailValid(valid);
-                  }}
-                  placeholder="votre.email@gmail.com"
-                  className={`w-full p-3 border rounded-lg ${
-                    isEmailValid ? 'border-green-300 bg-green-50' :
-                    userEmail ? 'border-red-300 bg-red-50' : 'border-gray-300'
-                  }`}
-                />
-              </div>
-
-              <button
-                onClick={sendCalendarInvitations}
-                disabled={!isEmailValid || courses.length === 0 || isEmailSending}
-                className="w-full p-3 bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white rounded-lg font-medium"
-              >
-                {isEmailSending ? 'Envoi...' : '📧 Envoyer invitations calendrier'}
-              </button>
-            </div>
-          </div>
-
-          {/* Configuration Notifications */}
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-6">🔔 Notifications Push</h2>
-
-            <div className="space-y-4">
-              {notificationPermission === 'granted' ? (
-                <div className="text-green-600">✅ Notifications activées</div>
-              ) : (
-                <button
-                  onClick={initializeNotifications}
-                  className="px-4 py-2 bg-blue-100 hover:bg-blue-200 rounded text-blue-700"
-                >
-                  🔓 Activer les notifications
-                </button>
               )}
-
-              <button
-                onClick={testNotification}
-                disabled={notificationPermission !== 'granted'}
-                className="px-4 py-2 bg-green-100 hover:bg-green-200 disabled:bg-gray-100 rounded text-green-700 disabled:text-gray-400"
-              >
-                🧪 Test notification
-              </button>
-            </div>
-          </div>
-
-          {/* Configuration Horaires */}
-          <div className="bg-white rounded-lg shadow-sm border p-6">
-            <h2 className="text-xl font-semibold text-gray-800 mb-6">⏰ Préférences Horaires</h2>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Début de journée
-                </label>
-                <select
-                  value={timePreferences.preferredStartHour}
-                  onChange={(e) => setTimePreferences(prev => ({...prev, preferredStartHour: parseInt(e.target.value)}))}
-                  className="w-full p-2 border rounded-lg"
-                >
-                  {Array.from({length: 12}, (_, i) => i + 7).map(hour => (
-                    <option key={hour} value={hour}>{hour}h00</option>
-                  ))}
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-700 mb-1">
-                  Fin de journée
-                </label>
-                <select
-                  value={timePreferences.preferredEndHour}
-                  onChange={(e) => setTimePreferences(prev => ({...prev, preferredEndHour: parseInt(e.target.value)}))}
-                  className="w-full p-2 border rounded-lg"
-                >
-                  {Array.from({length: 8}, (_, i) => i + 16).map(hour => (
-                    <option key={hour} value={hour}>{hour}h00</option>
-                  ))}
-                </select>
-              </div>
             </div>
 
-            <button
-              onClick={() => {
-                localStorage.setItem('medical_time_preferences', JSON.stringify(timePreferences));
-                setChatMessages(prev => [...prev, {
-                  type: 'ai',
-                  content: `✅ Préférences horaires sauvegardées !`
-                }]);
-              }}
-              className="mt-4 w-full px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700"
-            >
-              💾 Sauvegarder les préférences
-            </button>
+            {/* Email */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <h2 className="font-semibold mb-4 flex items-center gap-2"><Mail className="w-4 h-4 text-indigo-600" /> {t('settings.email.title')}</h2>
+              <input type="email" value={userEmail} onChange={(e) => { setUserEmail(e.target.value); setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.target.value)); }}
+                placeholder={t('settings.email.label')} className={`w-full p-2.5 border rounded-lg mb-3 ${isEmailValid ? 'border-emerald-300 bg-emerald-50' : userEmail ? 'border-rose-300 bg-rose-50' : 'border-slate-200 dark:border-slate-700'}`} />
+              <button onClick={sendInvitations} disabled={!isEmailValid || !courses.length || isEmailSending} className="w-full py-2.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:bg-slate-300">{isEmailSending ? t('settings.email.sending') : t('settings.email.send')}</button>
+            </div>
+
+            {/* Notifications */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <h2 className="font-semibold mb-4 flex items-center gap-2"><Bell className="w-4 h-4 text-indigo-600" /> {t('settings.notif.title')}</h2>
+              {notificationPermission === 'granted' ? (
+                <div className="flex items-center gap-2">
+                  <span className="text-emerald-600 text-sm">✓ {t('settings.notif.enabled')}</span>
+                  <button onClick={testNotification} className="ml-auto px-3 py-1.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg text-sm">{t('settings.notif.test')}</button>
+                </div>
+              ) : (
+                <button onClick={initNotifications} className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm">{t('settings.notif.enable')}</button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 };
 
 export default function Home() {
-  return <MedicalPlanningAgent />;
+  return <MemoMed />;
 }

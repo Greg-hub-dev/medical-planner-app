@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Agent Médical - Planning Intelligent",
-  description: "Système de planning médical avec méthode d'espacement J pour optimiser la rétention mémorielle",
+  title: "MémoMed — Révisions médicales",
+  description: "Planificateur de révisions médicales par répétition espacée (méthode des J), 100 % local.",
 };
 
 export default function RootLayout({

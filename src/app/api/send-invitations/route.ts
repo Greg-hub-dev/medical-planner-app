@@ -11,6 +11,8 @@ interface SessionData {
     date: string;
     interval: string;
     intervalLabel: string;
+    start?: string; // ISO — heure de début calculée (préférences horaires)
+    end?: string;   // ISO — heure de fin calculée
   };
   course: {
     name: string;
@@ -37,14 +39,19 @@ const createTransporter = () => {
 // Génération du contenu .ics
 const generateICSContent = (sessionData: SessionData, userEmail: string): string => {
   const { session, course } = sessionData;
-  const startDate = new Date(session.date);
-  startDate.setHours(9, 0, 0); // 9h par défaut
+  // Utilise les horaires calculés par l'app si fournis, sinon repli sur 9h.
+  const startDate = session.start ? new Date(session.start) : new Date(session.date);
+  if (!session.start) startDate.setHours(9, 0, 0, 0);
 
-  const endDate = new Date(startDate);
-  endDate.setHours(startDate.getHours() + course.hoursPerDay);
+  const endDate = session.end
+    ? new Date(session.end)
+    : new Date(startDate.getTime() + course.hoursPerDay * 3600 * 1000);
 
   const formatDate = (date: Date) =>
     date.toISOString().replace(/[-:]/g, '').split('.')[0] + 'Z';
+
+  // SEQUENCE croissant : chaque envoi met à jour l'évènement au lieu de dupliquer.
+  const sequence = Math.floor(Date.now() / 60000);
 
   return `BEGIN:VCALENDAR
 VERSION:2.0
@@ -61,7 +68,7 @@ LOCATION:Bureau/Bibliothèque
 ORGANIZER:MAILTO:${process.env.EMAIL_USER}
 ATTENDEE:MAILTO:${userEmail}
 STATUS:CONFIRMED
-SEQUENCE:0
+SEQUENCE:${sequence}
 PRIORITY:5
 CATEGORIES:EDUCATION,MEDICAL,REVISION
 BEGIN:VALARM

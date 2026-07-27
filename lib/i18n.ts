@@ -1,0 +1,234 @@
+// Internationalisation (français par défaut, anglais en option).
+// Dictionnaire plat : t(lang, 'cle', {vars}) avec repli sur le français puis la clé.
+
+export type Lang = 'fr' | 'en';
+
+type Dict = Record<string, string>;
+
+export const APP_NAME = 'MémoMed';
+
+const fr: Dict = {
+  'tagline': 'Planificateur de révisions médicales · répétition espacée',
+  'nav.planning': 'Planning & Assistant',
+  'nav.courses': 'Mes cours',
+  'nav.settings': 'Réglages',
+  'status.local': 'Stockage local',
+  'status.ready': 'Prêt',
+  'status.unavailable': 'Indisponible',
+  'status.lastSync': 'Dernière synchro',
+  'loading.title': 'Chargement de vos données…',
+  'loading.sub': 'Lecture du stockage local',
+
+  'stats.courses': 'Cours',
+  'stats.today': "Aujourd'hui",
+  'stats.progress': 'Progression',
+  'stats.overdue': 'En retard',
+
+  'planning.title': 'Planning hebdomadaire',
+  'planning.thisWeek': 'Cette semaine',
+  'planning.rest': 'Repos',
+  'planning.restAuto': 'Repos automatique',
+  'planning.total': 'Total',
+  'planning.overdue.btn': 'Replanifier les sessions en retard',
+  'planning.overdue.none': 'Aucune session en retard.',
+  'planning.overdue.done': '{n} session(s) en retard replanifiée(s) à aujourd\'hui.',
+  'planning.rescheduled': 'Reporté',
+
+  'session.markPass': 'Réussi',
+  'session.markFail': 'À revoir',
+  'session.delete': 'Supprimer',
+  'session.done': 'Terminé',
+  'session.confirmDelete': 'Supprimer la session {interval} de « {course} » ?',
+
+  'assistant.title': 'Assistant',
+  'assistant.subtitle': 'Ajoutez des cours, contraintes et consultez votre planning',
+  'assistant.placeholder': 'Ex : Ajouter Anatomie avec 2 heures par jour',
+  'assistant.newCourse': 'Nouveau cours',
+  'assistant.week': 'Semaine',
+  'assistant.help': 'Aide',
+  'assistant.config': 'Réglages',
+  'assistant.welcome': "Bonjour ! Je vous aide à planifier vos révisions.\n\n• « Ajouter Anatomie avec 2 heures par jour »\n• « Ajouter Physiologie 1.5h démarrage le 15/03 »\n• « Contrainte le 20/03 de 9h à 12h »\n• « Planning de la semaine » · « Aide »",
+  'assistant.added': '✅ Cours « {name} » ajouté ({hours} h/jour). Sessions générées selon la méthode des J.',
+  'assistant.courseEmpty': 'Votre planning est vide. Ajoutez un premier cours pour commencer.',
+  'assistant.weekHeader': '📅 Planning de la semaine :',
+  'assistant.weekRest': 'Repos',
+  'assistant.constraintAdded': '✅ Contrainte ajoutée le {date}.',
+  'assistant.constraintRange': '✅ Contrainte ajoutée du {from} au {to}.',
+  'assistant.moved': '✅ « {course} » déplacé au {date}.',
+  'assistant.moveNotFound': "Je n'ai pas trouvé le cours à déplacer. Précisez son nom.",
+  'assistant.listCourses': 'Vos cours : {list}',
+  'assistant.noCourses': "Vous n'avez pas encore de cours.",
+  'assistant.helpText': "Commandes disponibles :\n\n📚 « Ajouter [nom] avec [X] heures par jour »\n📅 « Planning de la semaine » · « Mon planning du jour »\n⚠️ « Contrainte le 20/03 de 9h à 12h » · « Indisponible du 12 au 16 mars »\n🔁 « Déplacer [cours] au 19/03 »\n📖 « Mes cours »",
+  'assistant.unknown': "Je n'ai pas compris « {msg} ». Tapez « Aide » pour voir les commandes.",
+
+  'courses.title': 'Gestion des cours',
+  'courses.empty': 'Aucun cours pour le moment.',
+  'courses.emptyCta': 'Ajoutez un cours depuis l\'assistant',
+  'courses.perDay': 'h/jour',
+  'courses.progress': 'Progression',
+  'courses.sessions': 'sessions',
+  'courses.done': 'terminées',
+  'courses.delete': 'Supprimer le cours',
+  'courses.confirmDelete': 'Supprimer le cours « {name} » et toutes ses sessions ?',
+  'courses.hours': 'Heures / jour',
+
+  'constraints.title': 'Contraintes & indisponibilités',
+  'constraints.date': 'Date',
+  'constraints.allDay': 'Toute la journée',
+  'constraints.from': 'De',
+  'constraints.to': 'à',
+  'constraints.add': 'Ajouter',
+  'constraints.none': 'Aucune contrainte.',
+  'constraints.desc': 'Description',
+  'constraints.descPlaceholder': 'Ex : Stage, rendez-vous…',
+
+  'settings.title': 'Réglages',
+  'settings.language': 'Langue',
+  'settings.email.title': 'Invitations calendrier',
+  'settings.email.label': 'Votre email',
+  'settings.email.send': 'Envoyer les invitations',
+  'settings.email.sending': 'Envoi…',
+  'settings.notif.title': 'Notifications',
+  'settings.notif.enabled': 'Notifications activées',
+  'settings.notif.enable': 'Activer les notifications',
+  'settings.notif.test': 'Tester',
+  'settings.hours.title': 'Préférences horaires',
+  'settings.hours.start': 'Début de journée',
+  'settings.hours.end': 'Fin de journée',
+  'settings.save': 'Enregistrer',
+  'settings.saved': '✅ Préférences enregistrées.',
+
+  'theme.light': 'Clair', 'theme.dark': 'Sombre',
+  'analytics.streak': 'Série', 'analytics.streakDays': 'jours', 'analytics.week': 'Charge 7 j',
+  'analytics.success': 'Réussite', 'analytics.title': 'Statistiques',
+  'data.title': 'Données & sauvegarde',
+  'data.desc': 'Vos données restent sur cet appareil. Exportez régulièrement pour créer une sauvegarde.',
+  'data.export': 'Exporter (JSON)', 'data.import': 'Importer une sauvegarde',
+  'data.imported': '✅ Sauvegarde importée : {courses} cours, {constraints} contraintes.',
+  'data.importError': '❌ Fichier invalide.',
+  'session.moveLeft': "Reculer d'un jour", 'session.moveRight': "Avancer d'un jour",
+
+  'days.0': 'Lundi', 'days.1': 'Mardi', 'days.2': 'Mercredi', 'days.3': 'Jeudi',
+  'days.4': 'Vendredi', 'days.5': 'Samedi', 'days.6': 'Dimanche',
+};
+
+const en: Dict = {
+  'tagline': 'Medical revision planner · spaced repetition',
+  'nav.planning': 'Planner & Assistant',
+  'nav.courses': 'My courses',
+  'nav.settings': 'Settings',
+  'status.local': 'Local storage',
+  'status.ready': 'Ready',
+  'status.unavailable': 'Unavailable',
+  'status.lastSync': 'Last sync',
+  'loading.title': 'Loading your data…',
+  'loading.sub': 'Reading local storage',
+
+  'stats.courses': 'Courses',
+  'stats.today': 'Today',
+  'stats.progress': 'Progress',
+  'stats.overdue': 'Overdue',
+
+  'planning.title': 'Weekly planner',
+  'planning.thisWeek': 'This week',
+  'planning.rest': 'Rest',
+  'planning.restAuto': 'Automatic rest day',
+  'planning.total': 'Total',
+  'planning.overdue.btn': 'Reschedule overdue sessions',
+  'planning.overdue.none': 'No overdue sessions.',
+  'planning.overdue.done': '{n} overdue session(s) moved to today.',
+  'planning.rescheduled': 'Moved',
+
+  'session.markPass': 'Passed',
+  'session.markFail': 'Review again',
+  'session.delete': 'Delete',
+  'session.done': 'Done',
+  'session.confirmDelete': 'Delete the {interval} session of “{course}”?',
+
+  'assistant.title': 'Assistant',
+  'assistant.subtitle': 'Add courses, constraints and view your plan',
+  'assistant.placeholder': 'e.g. Add Anatomy with 2 hours per day',
+  'assistant.newCourse': 'New course',
+  'assistant.week': 'Week',
+  'assistant.help': 'Help',
+  'assistant.config': 'Settings',
+  'assistant.welcome': "Hi! I'll help you plan your revisions.\n\n• “Add Anatomy with 2 hours per day”\n• “Add Physiology 1.5h starting 03/15”\n• “Constraint on 03/20 from 9 to 12”\n• “Week plan” · “Help”",
+  'assistant.added': '✅ Course “{name}” added ({hours} h/day). Sessions generated with the spacing method.',
+  'assistant.courseEmpty': 'Your plan is empty. Add a first course to get started.',
+  'assistant.weekHeader': '📅 Week plan:',
+  'assistant.weekRest': 'Rest',
+  'assistant.constraintAdded': '✅ Constraint added on {date}.',
+  'assistant.constraintRange': '✅ Constraint added from {from} to {to}.',
+  'assistant.moved': '✅ “{course}” moved to {date}.',
+  'assistant.moveNotFound': "I couldn't find the course to move. Please specify its name.",
+  'assistant.listCourses': 'Your courses: {list}',
+  'assistant.noCourses': "You don't have any courses yet.",
+  'assistant.helpText': "Available commands:\n\n📚 “Add [name] with [X] hours per day”\n📅 “Week plan” · “Today's plan”\n⚠️ “Constraint on 03/20 from 9 to 12” · “Busy from 12 to 16 March”\n🔁 “Move [course] to 03/19”\n📖 “My courses”",
+  'assistant.unknown': "I didn't understand “{msg}”. Type “Help” to see the commands.",
+
+  'courses.title': 'Course management',
+  'courses.empty': 'No courses yet.',
+  'courses.emptyCta': 'Add a course from the assistant',
+  'courses.perDay': 'h/day',
+  'courses.progress': 'Progress',
+  'courses.sessions': 'sessions',
+  'courses.done': 'done',
+  'courses.delete': 'Delete course',
+  'courses.confirmDelete': 'Delete course “{name}” and all its sessions?',
+  'courses.hours': 'Hours / day',
+
+  'constraints.title': 'Constraints & unavailability',
+  'constraints.date': 'Date',
+  'constraints.allDay': 'All day',
+  'constraints.from': 'From',
+  'constraints.to': 'to',
+  'constraints.add': 'Add',
+  'constraints.none': 'No constraints.',
+  'constraints.desc': 'Description',
+  'constraints.descPlaceholder': 'e.g. Internship, appointment…',
+
+  'settings.title': 'Settings',
+  'settings.language': 'Language',
+  'settings.email.title': 'Calendar invitations',
+  'settings.email.label': 'Your email',
+  'settings.email.send': 'Send invitations',
+  'settings.email.sending': 'Sending…',
+  'settings.notif.title': 'Notifications',
+  'settings.notif.enabled': 'Notifications enabled',
+  'settings.notif.enable': 'Enable notifications',
+  'settings.notif.test': 'Test',
+  'settings.hours.title': 'Time preferences',
+  'settings.hours.start': 'Day start',
+  'settings.hours.end': 'Day end',
+  'settings.save': 'Save',
+  'settings.saved': '✅ Preferences saved.',
+
+  'theme.light': 'Light', 'theme.dark': 'Dark',
+  'analytics.streak': 'Streak', 'analytics.streakDays': 'days', 'analytics.week': '7-day load',
+  'analytics.success': 'Success rate', 'analytics.title': 'Analytics',
+  'data.title': 'Data & backup',
+  'data.desc': 'Your data stays on this device. Export regularly to keep a backup.',
+  'data.export': 'Export (JSON)', 'data.import': 'Import a backup',
+  'data.imported': '✅ Backup imported: {courses} courses, {constraints} constraints.',
+  'data.importError': '❌ Invalid file.',
+  'session.moveLeft': 'Move one day earlier', 'session.moveRight': 'Move one day later',
+
+  'days.0': 'Monday', 'days.1': 'Tuesday', 'days.2': 'Wednesday', 'days.3': 'Thursday',
+  'days.4': 'Friday', 'days.5': 'Saturday', 'days.6': 'Sunday',
+};
+
+const dicts: Record<Lang, Dict> = { fr, en };
+
+export function t(lang: Lang, key: string, vars?: Record<string, string | number>): string {
+  let s = dicts[lang]?.[key] ?? dicts.fr[key] ?? key;
+  if (vars) {
+    for (const [k, v] of Object.entries(vars)) {
+      s = s.replace(new RegExp(`\\{${k}\\}`, 'g'), String(v));
+    }
+  }
+  return s;
+}
+
+export function dayLabels(lang: Lang): string[] {
+  return [0, 1, 2, 3, 4, 5, 6].map((i) => t(lang, `days.${i}`));
+}
