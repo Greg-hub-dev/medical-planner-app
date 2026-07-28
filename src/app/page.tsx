@@ -5,6 +5,7 @@ import {
   Brain, Calendar, Clock, CheckCircle2, AlertTriangle, Plus, Minus, Trash2,
   ChevronLeft, ChevronRight, BookOpen, Settings as SettingsIcon, Bell, Mail,
   Check, X, RefreshCw, Wifi, WifiOff, Sun, Moon, Download, Upload, Flame, TrendingUp,
+  RotateCcw, Undo2,
 } from 'lucide-react';
 import { t as translate, dayLabels, APP_NAME, type Lang } from '../../lib/i18n';
 import {
@@ -82,8 +83,13 @@ const MemoMed = () => {
   const [isOnline, setIsOnline] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState<'planning' | 'courses' | 'settings'>('planning');
+  const [viewMode, setViewMode] = useState<'week' | 'month'>('month');
+  const [moveLinked, setMoveLinked] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
+  const historyRef = useRef<{ courses: Course[]; constraints: Constraint[] }[]>([]);
+  const [undoAvailable, setUndoAvailable] = useState(false);
+  const undoRef = useRef<() => void>(() => {});
 
   const [timePrefs, setTimePrefs] = useState<TimePrefs>({
     preferredStartHour: 9, preferredEndHour: 18, lunchBreakStart: 13, lunchBreakEnd: 14,
@@ -111,6 +117,24 @@ const MemoMed = () => {
     if (toastTimer.current) clearTimeout(toastTimer.current);
     toastTimer.current = window.setTimeout(() => setToast(null), 4000);
   };
+
+  // ---- Undo history (Ctrl+Z) ---------------------------------------------
+  // Les mises à jour d'état sont immuables : mémoriser les références suffit.
+  const snapshot = () => {
+    historyRef.current.push({ courses, constraints });
+    if (historyRef.current.length > 60) historyRef.current.shift();
+    setUndoAvailable(true);
+  };
+  const undo = () => {
+    const h = historyRef.current;
+    if (!h.length) { say(t('undo.none')); return; }
+    const prev = h.pop()!;
+    setCourses(prev.courses);
+    setConstraints(prev.constraints);
+    setUndoAvailable(h.length > 0);
+    say(t('undo.done'));
+  };
+  undoRef.current = undo;
 
   // ---- Persistence --------------------------------------------------------
   const saveCourses = useCallback(async (data: Course[]) => {
@@ -184,6 +208,8 @@ const MemoMed = () => {
     if (e) { setUserEmail(e); setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e)); }
     const p = localStorage.getItem('memomed_time_prefs');
     if (p) { try { setTimePrefs(JSON.parse(p)); } catch {} }
+    if (localStorage.getItem('memomed_move_linked') === '1') setMoveLinked(true);
+    const vm = localStorage.getItem('memomed_view'); if (vm === 'week' || vm === 'month') setViewMode(vm);
     if ('Notification' in window) setNotificationPermission(Notification.permission);
   }, [loadData]);
 
@@ -194,6 +220,23 @@ const MemoMed = () => {
     document.documentElement.classList.toggle('dark', theme === 'dark');
     localStorage.setItem('memomed_theme', theme);
   }, [theme]);
+  useEffect(() => { localStorage.setItem('memomed_move_linked', moveLinked ? '1' : '0'); }, [moveLinked]);
+  useEffect(() => { localStorage.setItem('memomed_view', viewMode); }, [viewMode]);
+
+  // Ctrl+Z / Cmd+Z pour annuler la dernière action (sauf dans un champ de saisie).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'z' || e.key === 'Z') && !e.shiftKey) {
+        const el = e.target as HTMLElement | null;
+        const tag = el?.tagName;
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+        e.preventDefault();
+        undoRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
   // Sessions futures non terminées, avec horaires calculés (email + notifications).
   const computeUpcoming = useCallback(() => {
@@ -254,27 +297,42 @@ const MemoMed = () => {
   const discardDraft = (id: string) => setDrafts((p) => p.filter((d) => d.tempId !== id));
   const commitDraft = (d: Draft) => {
     if (!d.name.trim()) return;
+    snapshot();
     addCourse(d.name.trim(), d.hours, d.startDate ? new Date(d.startDate + 'T00:00:00') : null);
     discardDraft(d.tempId);
     say(t('assistant.created', { name: d.name.trim() }));
   };
   const commitAllDrafts = () => {
     const valid = drafts.filter((d) => d.name.trim());
+    if (!valid.length) return;
+    snapshot();
     valid.forEach((d) => addCourse(d.name.trim(), d.hours, d.startDate ? new Date(d.startDate + 'T00:00:00') : null));
     setDrafts([]);
-    if (valid.length) say(t('assistant.createdN', { n: valid.length }));
+    say(t('assistant.createdN', { n: valid.length }));
   };
 
-  const deleteCourse = (id: string) => setCourses((p) => p.filter((c) => c.id !== id));
+  const deleteCourse = (id: string) => { snapshot(); setCourses((p) => p.filter((c) => c.id !== id)); };
 
-  const updateCourseHours = (id: string, delta: number) =>
+  const updateCourseHours = (id: string, delta: number) => {
+    snapshot();
     setCourses((p) => p.map((c) => c.id === id ? { ...c, hoursPerDay: Math.max(0.5, Math.round((c.hoursPerDay + delta) * 2) / 2) } : c));
+  };
 
-  const markSession = (courseId: string, sessionId: string, success: boolean) =>
+  const markSession = (courseId: string, sessionId: string, success: boolean) => {
+    snapshot();
     setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: engineMark(c.sessions, sessionId, success) } : c));
+  };
 
-  const deleteSession = (courseId: string, sessionId: string) =>
+  // Repasse une session terminée en « à faire ».
+  const uncompleteSession = (courseId: string, sessionId: string) => {
+    snapshot();
+    setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.map((s) => s.id === sessionId ? { ...s, completed: false, success: null } : s) } : c));
+  };
+
+  const deleteSession = (courseId: string, sessionId: string) => {
+    snapshot();
     setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.filter((s) => s.id !== sessionId) } : c).filter((c) => c.sessions.length > 0));
+  };
 
   // Décale la session ancre ET toutes les sessions suivantes non terminées du
   // même cours du même nombre de jours (le planning des J reste solidaire).
@@ -305,19 +363,39 @@ const MemoMed = () => {
     shiftCourse(courseId, sessionId, Math.round((b.getTime() - a.getTime()) / 86400000));
   };
 
+  // Déplace UNIQUEMENT la session ciblée (saute le dimanche).
+  const moveOne = (courseId: string, sessionId: string, targetDate: Date) => {
+    const d = new Date(targetDate); d.setHours(0, 0, 0, 0);
+    if (d.getDay() === 0) d.setDate(d.getDate() + 1);
+    setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.map((s) => s.id === sessionId ? { ...s, date: d, rescheduled: true } : s) } : c));
+  };
+
+  // Applique un déplacement selon la préférence « déplacer les sessions liées ».
+  const applyMove = (courseId: string, sessionId: string, currentDate: Date, targetDate: Date) => {
+    snapshot();
+    if (moveLinked) moveSessionTo(courseId, sessionId, currentDate, targetDate);
+    else moveOne(courseId, sessionId, targetDate);
+  };
+
   // Déplacement clavier-accessible (±1 jour).
-  const moveByDays = (courseId: string, sessionId: string, _from: Date, delta: number) => shiftCourse(courseId, sessionId, delta);
+  const moveByDays = (courseId: string, sessionId: string, from: Date, delta: number) => {
+    const target = new Date(from); target.setDate(target.getDate() + delta);
+    applyMove(courseId, sessionId, from, target);
+  };
 
   const rescheduleAll = () => {
+    snapshot();
     let total = 0;
     setCourses((p) => p.map((c) => { const r = rescheduleOverdue(c.sessions); total += r.count; return { ...c, sessions: r.sessions }; }));
     say(total ? t('planning.overdue.done', { n: total }) : t('planning.overdue.none'));
   };
 
-  const addConstraintObj = (date: Date, endDate: Date | null, allDay: boolean, startHour: number, endHour: number, description = '') =>
+  const addConstraintObj = (date: Date, endDate: Date | null, allDay: boolean, startHour: number, endHour: number, description = '') => {
+    snapshot();
     setConstraints((p) => [...p, { id: newId(), date, endDate, allDay, startHour, endHour, description }]);
+  };
 
-  const deleteConstraint = (id: string) => setConstraints((p) => p.filter((c) => c.id !== id));
+  const deleteConstraint = (id: string) => { snapshot(); setConstraints((p) => p.filter((c) => c.id !== id)); };
 
   // ---- Data export / import (#4) -----------------------------------------
   const exportData = () => {
@@ -477,7 +555,7 @@ const MemoMed = () => {
   const onDrop = (e: React.DragEvent, date: Date) => {
     e.preventDefault();
     if (!draggedSession || date.getDay() === 0) { setDraggedSession(null); return; }
-    moveSessionTo(draggedSession.courseId, draggedSession.sessionId, draggedSession.date, date);
+    applyMove(draggedSession.courseId, draggedSession.sessionId, draggedSession.date, date);
     setDraggedSession(null);
   };
 
@@ -505,9 +583,10 @@ const MemoMed = () => {
     );
   }
 
-  const calWeeks = getWeeks(currentWeek, 4);
+  const numWeeks = viewMode === 'month' ? 4 : 1;
+  const calWeeks = getWeeks(currentWeek, numWeeks);
   const calFirst = calWeeks[0][0].date;
-  const calLast = calWeeks[3][6].date;
+  const calLast = calWeeks[numWeeks - 1][6].date;
   const dfmtShort = (d: Date) => d.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US', { day: '2-digit', month: 'short' });
 
   return (
@@ -525,6 +604,10 @@ const MemoMed = () => {
             </div>
           </div>
           <div className="flex items-center gap-3">
+            <button onClick={undo} disabled={!undoAvailable} title={`${t('undo.label')} (Ctrl+Z)`}
+              className="w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50 disabled:opacity-40 disabled:cursor-not-allowed">
+              <Undo2 className="w-4 h-4" />
+            </button>
             <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} title={t(theme === 'dark' ? 'theme.light' : 'theme.dark')}
               className="w-9 h-9 rounded-lg border border-slate-200 dark:border-slate-700 bg-white dark:bg-slate-800 flex items-center justify-center text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700/50">
               {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
@@ -622,12 +705,17 @@ const MemoMed = () => {
               <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
                 <h2 className="text-lg font-semibold flex items-center gap-2 text-slate-900 dark:text-slate-100"><Calendar className="w-5 h-5 text-indigo-600" /> {t('planning.title')}</h2>
                 <div className="flex items-center gap-2">
+                  <div className="flex rounded-lg border border-slate-200 dark:border-slate-600 overflow-hidden text-xs font-medium">
+                    {(['week', 'month'] as const).map((v) => (
+                      <button key={v} onClick={() => setViewMode(v)} className={`px-2.5 py-1.5 ${viewMode === v ? 'bg-indigo-600 text-white' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-50 dark:hover:bg-slate-700'}`}>{t(`view.${v}`)}</button>
+                    ))}
+                  </div>
                   {overdue > 0 && (
                     <button onClick={rescheduleAll} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30 hover:bg-rose-100 dark:hover:bg-rose-500/20"><RefreshCw className="w-3.5 h-3.5" /> {overdue}</button>
                   )}
-                  <button onClick={() => setCurrentWeek(currentWeek - 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronLeft className="w-4 h-4" /></button>
-                  <button onClick={() => setCurrentWeek(0)} className="text-xs px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">{dfmtShort(calFirst)} – {dfmtShort(calLast)}</button>
-                  <button onClick={() => setCurrentWeek(currentWeek + 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronRight className="w-4 h-4" /></button>
+                  <button onClick={() => setCurrentWeek(currentWeek - numWeeks)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronLeft className="w-4 h-4" /></button>
+                  <button onClick={() => setCurrentWeek(0)} className="text-xs px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700 whitespace-nowrap">{dfmtShort(calFirst)} – {dfmtShort(calLast)}</button>
+                  <button onClick={() => setCurrentWeek(currentWeek + numWeeks)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronRight className="w-4 h-4" /></button>
                 </div>
               </div>
               <div className="grid grid-cols-7 border-r border-b border-slate-100 dark:border-slate-800 overflow-x-auto">
@@ -645,7 +733,7 @@ const MemoMed = () => {
                     <div key={day.date.toISOString()}
                       onDragOver={!isSunday ? (e) => e.preventDefault() : undefined}
                       onDrop={!isSunday ? (e) => onDrop(e, day.date) : undefined}
-                      className={`min-h-[96px] p-1.5 border-l border-t border-slate-100 dark:border-slate-800 ${isToday ? 'bg-indigo-50/70 dark:bg-indigo-500/10' : isSunday ? 'bg-slate-50 dark:bg-slate-800/40' : ''} ${overloaded ? 'ring-1 ring-inset ring-rose-300 dark:ring-rose-500/40' : ''}`}>
+                      className={`${viewMode === 'week' ? 'min-h-[150px]' : 'min-h-[96px]'} p-1.5 border-l border-t border-slate-100 dark:border-slate-800 ${isToday ? 'bg-indigo-50/70 dark:bg-indigo-500/10' : isSunday ? 'bg-slate-50 dark:bg-slate-800/40' : ''} ${overloaded ? 'ring-1 ring-inset ring-rose-300 dark:ring-rose-500/40' : ''}`}>
                       <div className="flex items-center justify-between">
                         <span className={`text-xs ${isToday ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-400 dark:text-slate-500'}`}>{firstOfMonth ? dfmtShort(day.date) : day.date.getDate()}</span>
                         {day.totalHours > 0 && <span className={`text-[10px] ${overloaded ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400 dark:text-slate-500'}`}>{day.totalHours}h</span>}
@@ -666,12 +754,18 @@ const MemoMed = () => {
                                 {s.course}
                               </div>
                               <div className="flex justify-between"><span className="opacity-70">{s.interval}</span><span>{s.hours}h</span></div>
-                              {!s.completed && (
+                              {viewMode === 'week' && <div className="text-[9px] font-mono opacity-60 mt-0.5">⏰ {s.startTime}–{s.endTime}</div>}
+                              {!s.completed ? (
                                 <div className="absolute -top-1.5 right-0 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity z-10">
                                   <button title={t('session.moveLeft')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, -1)} className="w-4 h-4 rounded bg-slate-600 text-white flex items-center justify-center"><ChevronLeft className="w-2.5 h-2.5" /></button>
                                   <button title={t('session.moveRight')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, 1)} className="w-4 h-4 rounded bg-slate-600 text-white flex items-center justify-center"><ChevronRight className="w-2.5 h-2.5" /></button>
                                   <button title={t('session.markPass')} onClick={() => markSession(s.courseId, s.sessionId, true)} className="w-4 h-4 rounded bg-emerald-500 text-white flex items-center justify-center"><Check className="w-2.5 h-2.5" /></button>
                                   <button title={t('session.markFail')} onClick={() => markSession(s.courseId, s.sessionId, false)} className="w-4 h-4 rounded bg-amber-500 text-white flex items-center justify-center"><RefreshCw className="w-2.5 h-2.5" /></button>
+                                  <button title={t('session.delete')} onClick={() => { if (confirm(t('session.confirmDelete', { interval: s.interval, course: s.course }))) deleteSession(s.courseId, s.sessionId); }} className="w-4 h-4 rounded bg-rose-500 text-white flex items-center justify-center"><X className="w-2.5 h-2.5" /></button>
+                                </div>
+                              ) : (
+                                <div className="absolute -top-1.5 right-0 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity z-10">
+                                  <button title={t('session.uncomplete')} onClick={() => uncompleteSession(s.courseId, s.sessionId)} className="w-4 h-4 rounded bg-slate-600 text-white flex items-center justify-center"><RotateCcw className="w-2.5 h-2.5" /></button>
                                   <button title={t('session.delete')} onClick={() => { if (confirm(t('session.confirmDelete', { interval: s.interval, course: s.course }))) deleteSession(s.courseId, s.sessionId); }} className="w-4 h-4 rounded bg-rose-500 text-white flex items-center justify-center"><X className="w-2.5 h-2.5" /></button>
                                 </div>
                               )}
@@ -752,6 +846,18 @@ const MemoMed = () => {
               <Segmented />
             </div>
 
+            {/* Move behavior */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
+              <h2 className="font-semibold mb-4 flex items-center gap-2"><ChevronRight className="w-4 h-4 text-indigo-600" /> {t('settings.move.title')}</h2>
+              <label className="flex items-start gap-3 text-sm cursor-pointer">
+                <input type="checkbox" checked={moveLinked} onChange={(e) => setMoveLinked(e.target.checked)} className="mt-0.5" />
+                <span>
+                  <span className="text-slate-700 dark:text-slate-200">{t('settings.move.linked')}</span>
+                  <span className="block text-xs text-slate-400 dark:text-slate-500 mt-0.5">{t('settings.move.hint')}</span>
+                </span>
+              </label>
+            </div>
+
             {/* Data & backup */}
             <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
               <h2 className="font-semibold mb-2 flex items-center gap-2"><Download className="w-4 h-4 text-indigo-600" /> {t('data.title')}</h2>
@@ -804,7 +910,7 @@ const MemoMed = () => {
                   {constraints.slice().sort((a, b) => a.date.getTime() - b.date.getTime()).map((c) => (
                     <div key={c.id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-700/50 rounded-lg text-sm">
                       <span>⚠ {c.date.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}{c.endDate ? ` → ${c.endDate.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}` : ''} · {c.allDay ? t('constraints.allDay') : `${c.startHour}h–${c.endHour}h`}{c.description ? ` · ${c.description}` : ''}</span>
-                      <button onClick={() => deleteConstraint(c.id)} className="text-rose-500 dark:text-rose-400 hover:text-rose-700"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={() => { if (confirm(t('constraints.confirmDelete'))) deleteConstraint(c.id); }} className="text-rose-500 dark:text-rose-400 hover:text-rose-700"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   ))}
                 </div>
