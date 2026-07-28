@@ -27,17 +27,17 @@ export const DEFAULT_SCHEME: SchemeStep[] = [
 ];
 
 const COLORS: Record<string, string> = {
-  'J0': 'bg-blue-100 text-blue-700 border-blue-200',
-  'J+1': 'bg-rose-100 text-rose-700 border-rose-200',
-  'J+2': 'bg-orange-100 text-orange-700 border-orange-200',
-  'J+10': 'bg-amber-100 text-amber-800 border-amber-200',
-  'J+25': 'bg-emerald-100 text-emerald-700 border-emerald-200',
-  'J+47': 'bg-violet-100 text-violet-700 border-violet-200',
-  'Reprise': 'bg-red-100 text-red-700 border-red-300',
+  'J0': 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/25',
+  'J+1': 'bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/25',
+  'J+2': 'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-500/15 dark:text-orange-300 dark:border-orange-500/25',
+  'J+10': 'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/25',
+  'J+25': 'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/25',
+  'J+47': 'bg-violet-100 text-violet-700 border-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:border-violet-500/25',
+  'Reprise': 'bg-red-100 text-red-700 border-red-300 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30',
 };
 
 export function colorFor(interval: string): string {
-  return COLORS[interval] || 'bg-slate-100 text-slate-700 border-slate-200';
+  return COLORS[interval] || 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
 }
 
 function skipSunday(d: Date): Date {

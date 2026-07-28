@@ -7,7 +7,6 @@ import {
   Check, X, RefreshCw, Wifi, WifiOff, Sun, Moon, Download, Upload, Flame, TrendingUp,
 } from 'lucide-react';
 import { t as translate, dayLabels, APP_NAME, type Lang } from '../../lib/i18n';
-import { parseCommand } from '../../lib/commandParser';
 import {
   generateSessions, markSession as engineMark, rescheduleOverdue, countOverdue,
   colorFor, newId, type EngineSession,
@@ -34,8 +33,6 @@ interface Constraint {
   description: string;
 }
 
-interface ChatMessage { type: 'ai' | 'user'; content: string; }
-
 interface TimePrefs {
   preferredStartHour: number;
   preferredEndHour: number;
@@ -57,6 +54,9 @@ interface DaySession {
 }
 
 interface DayPlan { date: Date; sessions: DaySession[]; totalHours: number; }
+
+// Brouillon de cours : édité/confirmé avant création (aperçu + slot-filling).
+interface Draft { tempId: string; name: string; hours: number; startDate: string; }
 
 const API = { courses: '/api/courses', constraints: '/api/constraints' };
 
@@ -82,12 +82,8 @@ const MemoMed = () => {
   const [isOnline, setIsOnline] = useState(true);
   const [lastSyncTime, setLastSyncTime] = useState<Date | null>(null);
   const [activeTab, setActiveTab] = useState<'planning' | 'courses' | 'settings'>('planning');
-  const [inputMessage, setInputMessage] = useState('');
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>(() => [
-    { type: 'ai', content: translate(
-      (typeof window !== 'undefined' && (localStorage.getItem('memomed_lang') as Lang)) || 'fr',
-      'assistant.welcome') },
-  ]);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
 
   const [timePrefs, setTimePrefs] = useState<TimePrefs>({
     preferredStartHour: 9, preferredEndHour: 18, lunchBreakStart: 13, lunchBreakEnd: 14,
@@ -105,10 +101,16 @@ const MemoMed = () => {
   const [ncTo, setNcTo] = useState(12);
   const [ncDesc, setNcDesc] = useState('');
 
-  const [draggedSession, setDraggedSession] = useState<{ courseId: string; sessionId: string } | null>(null);
+  const [draggedSession, setDraggedSession] = useState<{ courseId: string; sessionId: string; date: Date } | null>(null);
+  const [drafts, setDrafts] = useState<Draft[]>([]);
 
   const availableHours = Math.max(1, timePrefs.preferredEndHour - timePrefs.preferredStartHour - 1);
-  const say = (content: string) => setChatMessages((p) => [...p, { type: 'ai', content }]);
+  // Notification transitoire (remplace l'ancien fil de discussion de l'assistant).
+  const say = (content: string) => {
+    setToast(content);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 4000);
+  };
 
   // ---- Persistence --------------------------------------------------------
   const saveCourses = useCallback(async (data: Course[]) => {
@@ -246,6 +248,23 @@ const MemoMed = () => {
     setCourses((p) => [...p, { id: newId(), name, hoursPerDay: hours, createdAt: new Date(), sessions }]);
   };
 
+  // ---- Course drafts (preview / edit / confirm) ---------------------------
+  const addBlankDraft = () => setDrafts((p) => [...p, { tempId: newId(), name: '', hours: 1, startDate: '' }]);
+  const updateDraft = (id: string, patch: Partial<Draft>) => setDrafts((p) => p.map((d) => d.tempId === id ? { ...d, ...patch } : d));
+  const discardDraft = (id: string) => setDrafts((p) => p.filter((d) => d.tempId !== id));
+  const commitDraft = (d: Draft) => {
+    if (!d.name.trim()) return;
+    addCourse(d.name.trim(), d.hours, d.startDate ? new Date(d.startDate + 'T00:00:00') : null);
+    discardDraft(d.tempId);
+    say(t('assistant.created', { name: d.name.trim() }));
+  };
+  const commitAllDrafts = () => {
+    const valid = drafts.filter((d) => d.name.trim());
+    valid.forEach((d) => addCourse(d.name.trim(), d.hours, d.startDate ? new Date(d.startDate + 'T00:00:00') : null));
+    setDrafts([]);
+    if (valid.length) say(t('assistant.createdN', { n: valid.length }));
+  };
+
   const deleteCourse = (id: string) => setCourses((p) => p.filter((c) => c.id !== id));
 
   const updateCourseHours = (id: string, delta: number) =>
@@ -257,15 +276,37 @@ const MemoMed = () => {
   const deleteSession = (courseId: string, sessionId: string) =>
     setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.filter((s) => s.id !== sessionId) } : c).filter((c) => c.sessions.length > 0));
 
-  const moveSession = (courseId: string, sessionId: string, newDate: Date) =>
-    setCourses((p) => p.map((c) => c.id === courseId ? { ...c, sessions: c.sessions.map((s) => s.id === sessionId ? { ...s, date: new Date(newDate), rescheduled: true } : s) } : c));
-
-  // Déplacement clavier-accessible (±1 jour, saute le dimanche).
-  const moveByDays = (courseId: string, sessionId: string, from: Date, delta: number) => {
-    const d = new Date(from); d.setDate(d.getDate() + delta);
-    if (d.getDay() === 0) d.setDate(d.getDate() + (delta > 0 ? 1 : -1));
-    moveSession(courseId, sessionId, d);
+  // Décale la session ancre ET toutes les sessions suivantes non terminées du
+  // même cours du même nombre de jours (le planning des J reste solidaire).
+  const shiftCourse = (courseId: string, anchorSessionId: string, deltaDays: number) => {
+    if (!deltaDays) return;
+    setCourses((p) => p.map((c) => {
+      if (c.id !== courseId) return c;
+      const anchor = c.sessions.find((s) => s.id === anchorSessionId);
+      if (!anchor) return c;
+      const anchorMid = new Date(anchor.date); anchorMid.setHours(0, 0, 0, 0);
+      return {
+        ...c,
+        sessions: c.sessions.map((s) => {
+          if (s.completed) return s;
+          const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
+          if (sd.getTime() < anchorMid.getTime()) return s;
+          const nd = new Date(s.date); nd.setDate(nd.getDate() + deltaDays);
+          if (nd.getDay() === 0) nd.setDate(nd.getDate() + (deltaDays >= 0 ? 1 : -1));
+          return { ...s, date: nd, rescheduled: true };
+        }),
+      };
+    }));
   };
+
+  const moveSessionTo = (courseId: string, sessionId: string, currentDate: Date, targetDate: Date) => {
+    const a = new Date(currentDate); a.setHours(0, 0, 0, 0);
+    const b = new Date(targetDate); b.setHours(0, 0, 0, 0);
+    shiftCourse(courseId, sessionId, Math.round((b.getTime() - a.getTime()) / 86400000));
+  };
+
+  // Déplacement clavier-accessible (±1 jour).
+  const moveByDays = (courseId: string, sessionId: string, _from: Date, delta: number) => shiftCourse(courseId, sessionId, delta);
 
   const rescheduleAll = () => {
     let total = 0;
@@ -319,94 +360,51 @@ const MemoMed = () => {
     reader.readAsText(file);
   };
 
-  // ---- Assistant ----------------------------------------------------------
-  const dispatch = (text: string) => {
-    const intent = parseCommand(text, lang);
-    const dfmt = (d: Date) => d.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US');
-    switch (intent.action) {
-      case 'help': return t('assistant.helpText');
-      case 'week': {
-        if (!courses.length) return t('assistant.courseEmpty');
-        let out = t('assistant.weekHeader') + '\n';
-        Object.values(getWeeklyPlan(currentWeek)).forEach((d, i) => {
-          out += `\n${dayLabels(lang)[i]} ${d.date.getDate()}/${d.date.getMonth() + 1}: `;
-          out += d.sessions.length ? d.sessions.map((s) => `${s.course} (${s.interval})`).join(', ') : t('assistant.weekRest');
-        });
-        return out;
-      }
-      case 'today': {
-        const today = getTodaySessions();
-        if (!today.length) return t('assistant.weekRest');
-        return today.map((s) => `${s.course} (${s.interval}) — ${s.hours}h`).join('\n');
-      }
-      case 'list_courses':
-        return courses.length ? t('assistant.listCourses', { list: courses.map((c) => c.name).join(', ') }) : t('assistant.noCourses');
-      case 'add_course':
-        addCourse(intent.name, intent.hours, intent.startDate);
-        return t('assistant.added', { name: intent.name, hours: intent.hours });
-      case 'add_constraint':
-        addConstraintObj(intent.date, intent.endDate, intent.allDay, intent.startHour, intent.endHour);
-        return intent.endDate
-          ? t('assistant.constraintRange', { from: dfmt(intent.date), to: dfmt(intent.endDate) })
-          : t('assistant.constraintAdded', { date: dfmt(intent.date) });
-      case 'move_course': {
-        const c = courses.find((x) => x.name.toLowerCase().includes(intent.name.toLowerCase()));
-        if (!c) return t('assistant.moveNotFound');
-        const next = c.sessions.filter((s) => !s.completed).sort((a, b) => a.date.getTime() - b.date.getTime())[0];
-        if (!next) return t('assistant.moveNotFound');
-        moveSession(c.id, next.id, intent.toDate);
-        return t('assistant.moved', { course: c.name, date: dfmt(intent.toDate) });
-      }
-      default:
-        return t('assistant.unknown', { msg: text });
-    }
-  };
-
-  const handleSend = () => {
-    if (!inputMessage.trim()) return;
-    const msg = inputMessage;
-    setChatMessages((p) => [...p, { type: 'user', content: msg }, { type: 'ai', content: dispatch(msg) }]);
-    setInputMessage('');
-  };
-
   // ---- Planning computation ----------------------------------------------
   const fmt = (h: number) => `${Math.floor(h)}:${('0' + Math.round((h % 1) * 60)).slice(-2)}`;
 
-  const getWeekDates = (offset: number): Date[] => {
+  const mondayOf = (offsetWeeks: number): Date => {
     const today = new Date();
     const dow = today.getDay();
-    const monday = new Date(today);
-    monday.setDate(today.getDate() + (dow === 0 ? -6 : 1 - dow) + offset * 7);
-    return Array.from({ length: 7 }, (_, i) => { const d = new Date(monday); d.setDate(monday.getDate() + i); return d; });
+    const m = new Date(today);
+    m.setDate(today.getDate() + (dow === 0 ? -6 : 1 - dow) + offsetWeeks * 7);
+    m.setHours(0, 0, 0, 0);
+    return m;
   };
 
-  const getWeeklyPlan = (offset: number): Record<number, DayPlan> => {
-    const plan: Record<number, DayPlan> = {};
-    getWeekDates(offset).forEach((date, idx) => {
-      const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
-      const collected: { courseId: string; sessionId: string; course: string; s: Session; hours: number }[] = [];
-      if (idx !== 6) {
-        courses.forEach((c) => c.sessions.forEach((s) => {
-          const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
-          if (sd.getTime() === dayStart.getTime()) collected.push({ courseId: c.id, sessionId: s.id, course: c.name, s, hours: c.hoursPerDay });
-        }));
-      }
-      let cursor = timePrefs.preferredStartHour;
-      let total = 0;
-      const sessions: DaySession[] = collected.map((it) => {
-        if (cursor < timePrefs.lunchBreakStart && cursor + it.hours > timePrefs.lunchBreakStart) cursor = timePrefs.lunchBreakEnd;
-        const start = cursor, end = cursor + it.hours; cursor = end;
-        if (!it.s.completed) total += it.hours;
-        return {
-          courseId: it.courseId, sessionId: it.sessionId, course: it.course, interval: it.s.interval,
-          hours: it.hours, completed: it.s.completed, success: it.s.success, rescheduled: it.s.rescheduled,
-          startTime: fmt(start), endTime: fmt(end),
-        };
-      });
-      plan[idx] = { date, sessions, totalHours: total };
+  const buildDay = (date: Date): DayPlan => {
+    const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+    const isSunday = date.getDay() === 0;
+    const collected: { courseId: string; sessionId: string; course: string; s: Session; hours: number }[] = [];
+    if (!isSunday) {
+      courses.forEach((c) => c.sessions.forEach((s) => {
+        const sd = new Date(s.date); sd.setHours(0, 0, 0, 0);
+        if (sd.getTime() === dayStart.getTime()) collected.push({ courseId: c.id, sessionId: s.id, course: c.name, s, hours: c.hoursPerDay });
+      }));
+    }
+    let cursor = timePrefs.preferredStartHour;
+    let total = 0;
+    const sessions: DaySession[] = collected.map((it) => {
+      if (cursor < timePrefs.lunchBreakStart && cursor + it.hours > timePrefs.lunchBreakStart) cursor = timePrefs.lunchBreakEnd;
+      const start = cursor, end = cursor + it.hours; cursor = end;
+      if (!it.s.completed) total += it.hours;
+      return {
+        courseId: it.courseId, sessionId: it.sessionId, course: it.course, interval: it.s.interval,
+        hours: it.hours, completed: it.s.completed, success: it.s.success, rescheduled: it.s.rescheduled,
+        startTime: fmt(start), endTime: fmt(end),
+      };
     });
-    return plan;
+    return { date, sessions, totalHours: total };
   };
+
+  // Grille calendrier de N semaines à partir d'un décalage (en semaines).
+  const getWeeks = (offsetWeeks: number, n: number): DayPlan[][] => {
+    const monday = mondayOf(offsetWeeks);
+    return Array.from({ length: n }, (_, w) =>
+      Array.from({ length: 7 }, (_, d) => { const date = new Date(monday); date.setDate(monday.getDate() + w * 7 + d); return buildDay(date); })
+    );
+  };
+
 
   const getTodaySessions = () => {
     const today = new Date(); today.setHours(0, 0, 0, 0);
@@ -479,7 +477,7 @@ const MemoMed = () => {
   const onDrop = (e: React.DragEvent, date: Date) => {
     e.preventDefault();
     if (!draggedSession || date.getDay() === 0) { setDraggedSession(null); return; }
-    moveSession(draggedSession.courseId, draggedSession.sessionId, date);
+    moveSessionTo(draggedSession.courseId, draggedSession.sessionId, draggedSession.date, date);
     setDraggedSession(null);
   };
 
@@ -507,7 +505,10 @@ const MemoMed = () => {
     );
   }
 
-  const weekPlan = getWeeklyPlan(currentWeek);
+  const calWeeks = getWeeks(currentWeek, 4);
+  const calFirst = calWeeks[0][0].date;
+  const calLast = calWeeks[3][6].date;
+  const dfmtShort = (d: Date) => d.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US', { day: '2-digit', month: 'short' });
 
   return (
     <div className="min-h-screen bg-slate-50 dark:bg-slate-900 text-slate-800 dark:text-slate-100">
@@ -530,9 +531,9 @@ const MemoMed = () => {
             </button>
             <Segmented />
             <div className="flex items-center gap-2 text-xs bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg px-3 py-2">
-              {isOnline ? <Wifi className="w-3.5 h-3.5 text-emerald-500" /> : <WifiOff className="w-3.5 h-3.5 text-rose-500" />}
+              {isOnline ? <Wifi className="w-3.5 h-3.5 text-emerald-500" /> : <WifiOff className="w-3.5 h-3.5 text-rose-500 dark:text-rose-400" />}
               <span className="text-slate-600 dark:text-slate-300">{t('status.local')}</span>
-              <span className={isOnline ? 'text-emerald-600' : 'text-rose-600'}>{isOnline ? t('status.ready') : t('status.unavailable')}</span>
+              <span className={isOnline ? 'text-emerald-600 dark:text-emerald-400' : 'text-rose-600 dark:text-rose-400'}>{isOnline ? t('status.ready') : t('status.unavailable')}</span>
               {lastSyncTime && <span className="text-slate-400 dark:text-slate-500 hidden sm:inline">· {lastSyncTime.toLocaleTimeString(lang === 'fr' ? 'fr-FR' : 'en-US')}</span>}
             </div>
           </div>
@@ -545,7 +546,7 @@ const MemoMed = () => {
               className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-colors ${activeTab === tab ? 'bg-indigo-600 text-white shadow-sm' : 'bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700/50'}`}>
               <Icon className="w-4 h-4" /> {t(`nav.${tab}`)}
               {tab === 'courses' && courses.length > 0 && (
-                <span className={`ml-1 text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab ? 'bg-white/20' : 'bg-indigo-100 text-indigo-700'}`}>{courses.length}</span>
+                <span className={`ml-1 text-xs px-1.5 py-0.5 rounded-full ${activeTab === tab ? 'bg-white/20' : 'bg-indigo-100 dark:bg-indigo-500/15 text-indigo-700 dark:text-indigo-300'}`}>{courses.length}</span>
               )}
             </button>
           ))}
@@ -555,9 +556,9 @@ const MemoMed = () => {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
           {[
             { icon: BookOpen, color: 'text-indigo-600', label: t('stats.courses'), value: courses.length },
-            { icon: Clock, color: 'text-emerald-600', label: t('stats.today'), value: `${todayHours}h` },
+            { icon: Clock, color: 'text-emerald-600 dark:text-emerald-400', label: t('stats.today'), value: `${todayHours}h` },
             { icon: CheckCircle2, color: 'text-violet-600', label: t('stats.progress'), value: `${completionRate}%` },
-            { icon: AlertTriangle, color: overdue ? 'text-rose-600' : 'text-slate-400 dark:text-slate-500', label: t('stats.overdue'), value: overdue },
+            { icon: AlertTriangle, color: overdue ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400 dark:text-slate-500', label: t('stats.overdue'), value: overdue },
           ].map((s, i) => (
             <div key={i} className="bg-white dark:bg-slate-800 p-4 rounded-xl border border-slate-200 dark:border-slate-700">
               <div className="flex items-center gap-2 mb-1"><s.icon className={`w-4 h-4 ${s.color}`} /><span className="text-xs font-medium text-slate-500 dark:text-slate-400">{s.label}</span></div>
@@ -578,112 +579,109 @@ const MemoMed = () => {
 
         {/* PLANNING TAB */}
         {activeTab === 'planning' && (
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
-              <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
-                <div className="p-5 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
-                  <h2 className="text-lg font-semibold flex items-center gap-2"><Calendar className="w-5 h-5 text-indigo-600" /> {t('planning.title')}</h2>
-                  <div className="flex items-center gap-2">
-                    {overdue > 0 && (
-                      <button onClick={rescheduleAll} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-rose-50 text-rose-700 border border-rose-200 hover:bg-rose-100">
-                        <RefreshCw className="w-3.5 h-3.5" /> {overdue}
-                      </button>
-                    )}
-                    <button onClick={() => setCurrentWeek(currentWeek - 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronLeft className="w-4 h-4" /></button>
-                    <span className="text-sm font-medium px-2 min-w-[90px] text-center">{currentWeek === 0 ? t('planning.thisWeek') : (currentWeek > 0 ? `+${currentWeek}` : currentWeek)}</span>
-                    <button onClick={() => setCurrentWeek(currentWeek + 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronRight className="w-4 h-4" /></button>
-                  </div>
+          <div className="space-y-6">
+            {/* Course creation (quick add) */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-4">
+              <div className="flex items-center justify-between gap-3 mb-3">
+                <div>
+                  <h2 className="font-semibold flex items-center gap-2 text-slate-900 dark:text-slate-100"><BookOpen className="w-4 h-4 text-indigo-600" /> {t('create.title')}</h2>
+                  <p className="text-xs text-slate-500 dark:text-slate-400">{t('create.hint')}</p>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-7 divide-y md:divide-y-0 md:divide-x divide-slate-100">
-                  {Object.entries(weekPlan).map(([k, day]) => {
-                    const idx = Number(k);
-                    const isToday = day.date.toDateString() === new Date().toDateString();
-                    const isSunday = idx === 6;
-                    const overloaded = day.totalHours > availableHours;
-                    const dayConstraints = constraintsOnDate(day.date);
-                    return (
-                      <div key={k}
-                        onDragOver={!isSunday ? (e) => e.preventDefault() : undefined}
-                        onDrop={!isSunday ? (e) => onDrop(e, day.date) : undefined}
-                        className={`p-3 min-h-[220px] ${isToday ? 'bg-indigo-50/60' : isSunday ? 'bg-emerald-50/40' : ''}`}>
-                        <div className="mb-2">
-                          <h3 className={`text-sm font-semibold ${isToday ? 'text-indigo-700' : 'text-slate-700 dark:text-slate-200'}`}>{dayLabels(lang)[idx]}{isToday && ' •'}</h3>
-                          <p className="text-xs text-slate-400 dark:text-slate-500">{day.date.getDate()}/{day.date.getMonth() + 1}</p>
-                          {dayConstraints.map((c) => (
-                            <div key={c.id} className="mt-1 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 truncate">
-                              ⚠ {c.allDay ? t('constraints.allDay') : `${c.startHour}h–${c.endHour}h`}
+                <div className="flex items-center gap-2 shrink-0">
+                  {drafts.length > 1 && <button onClick={commitAllDrafts} className="text-xs px-3 py-1.5 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700">{t('draft.createAll')}</button>}
+                  <button onClick={addBlankDraft} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"><Plus className="w-4 h-4" /> {t('courses.add')}</button>
+                </div>
+              </div>
+              {drafts.length === 0 ? (
+                <p className="text-sm text-slate-400 dark:text-slate-500 py-2">{t('create.empty')}</p>
+              ) : (
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {drafts.map((d) => (
+                    <div key={d.tempId} className="border border-slate-200 dark:border-slate-700 rounded-lg p-2 bg-indigo-50/40 dark:bg-slate-700/40 space-y-2">
+                      <input autoFocus={!d.name} value={d.name} onChange={(e) => updateDraft(d.tempId, { name: e.target.value })} onKeyDown={(e) => e.key === 'Enter' && commitDraft(d)} placeholder={t('draft.name')} className="w-full text-sm p-1.5 border border-slate-200 dark:border-slate-600 rounded bg-white dark:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="flex items-center gap-1">
+                          <button onClick={() => updateDraft(d.tempId, { hours: Math.max(0.5, Math.round((d.hours - 0.5) * 2) / 2) })} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center"><Minus className="w-3 h-3" /></button>
+                          <span className="w-10 text-center text-xs font-medium">{d.hours}h</span>
+                          <button onClick={() => updateDraft(d.tempId, { hours: Math.round((d.hours + 0.5) * 2) / 2 })} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-700 flex items-center justify-center"><Plus className="w-3 h-3" /></button>
+                        </div>
+                        <input type="date" value={d.startDate} onChange={(e) => updateDraft(d.tempId, { startDate: e.target.value })} title={t('draft.start')} className="text-xs p-1 border border-slate-200 dark:border-slate-600 rounded bg-white dark:bg-slate-800" />
+                      </div>
+                      <div className="flex gap-1">
+                        <button onClick={() => commitDraft(d)} disabled={!d.name.trim()} className="flex-1 text-xs px-2 py-1.5 rounded bg-indigo-600 text-white hover:bg-indigo-700 disabled:bg-slate-300 flex items-center justify-center gap-1"><Check className="w-3 h-3" /> {t('draft.create')}</button>
+                        <button onClick={() => discardDraft(d.tempId)} title={t('draft.discard')} className="w-8 h-8 rounded bg-slate-100 dark:bg-slate-700 text-slate-500 flex items-center justify-center hover:bg-slate-200 dark:hover:bg-slate-600"><X className="w-3.5 h-3.5" /></button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 4-week calendar (below) */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
+              <div className="p-4 border-b border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold flex items-center gap-2 text-slate-900 dark:text-slate-100"><Calendar className="w-5 h-5 text-indigo-600" /> {t('planning.title')}</h2>
+                <div className="flex items-center gap-2">
+                  {overdue > 0 && (
+                    <button onClick={rescheduleAll} className="flex items-center gap-1 text-xs px-2.5 py-1.5 rounded-lg bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 border border-rose-200 dark:border-rose-500/30 hover:bg-rose-100 dark:hover:bg-rose-500/20"><RefreshCw className="w-3.5 h-3.5" /> {overdue}</button>
+                  )}
+                  <button onClick={() => setCurrentWeek(currentWeek - 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronLeft className="w-4 h-4" /></button>
+                  <button onClick={() => setCurrentWeek(0)} className="text-xs px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-600 hover:bg-slate-50 dark:hover:bg-slate-700">{dfmtShort(calFirst)} – {dfmtShort(calLast)}</button>
+                  <button onClick={() => setCurrentWeek(currentWeek + 1)} className="p-1.5 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-700"><ChevronRight className="w-4 h-4" /></button>
+                </div>
+              </div>
+              <div className="grid grid-cols-7 border-r border-b border-slate-100 dark:border-slate-800 overflow-x-auto">
+                {dayLabels(lang).map((d, i) => (
+                  <div key={i} className="text-center text-[11px] font-semibold text-slate-400 dark:text-slate-500 py-1.5 border-l border-slate-100 dark:border-slate-800">{d.slice(0, 3)}</div>
+                ))}
+                {calWeeks.map((week) => week.map((day) => {
+                  const idx = (day.date.getDay() + 6) % 7;
+                  const isSunday = idx === 6;
+                  const isToday = day.date.toDateString() === new Date().toDateString();
+                  const overloaded = day.totalHours > availableHours;
+                  const dayCons = constraintsOnDate(day.date);
+                  const firstOfMonth = day.date.getDate() === 1;
+                  return (
+                    <div key={day.date.toISOString()}
+                      onDragOver={!isSunday ? (e) => e.preventDefault() : undefined}
+                      onDrop={!isSunday ? (e) => onDrop(e, day.date) : undefined}
+                      className={`min-h-[96px] p-1.5 border-l border-t border-slate-100 dark:border-slate-800 ${isToday ? 'bg-indigo-50/70 dark:bg-indigo-500/10' : isSunday ? 'bg-slate-50 dark:bg-slate-800/40' : ''} ${overloaded ? 'ring-1 ring-inset ring-rose-300 dark:ring-rose-500/40' : ''}`}>
+                      <div className="flex items-center justify-between">
+                        <span className={`text-xs ${isToday ? 'font-bold text-indigo-700 dark:text-indigo-300' : 'text-slate-400 dark:text-slate-500'}`}>{firstOfMonth ? dfmtShort(day.date) : day.date.getDate()}</span>
+                        {day.totalHours > 0 && <span className={`text-[10px] ${overloaded ? 'text-rose-600 dark:text-rose-400' : 'text-slate-400 dark:text-slate-500'}`}>{day.totalHours}h</span>}
+                      </div>
+                      {dayCons.map((c) => (
+                        <div key={c.id} className="mt-0.5 text-[9px] px-1 rounded bg-amber-100 dark:bg-amber-500/15 text-amber-700 dark:text-amber-300 dark:bg-amber-500/15 dark:text-amber-300 truncate">⚠ {c.allDay ? t('constraints.allDay') : `${c.startHour}-${c.endHour}h`}</div>
+                      ))}
+                      {isSunday ? (
+                        <p className="text-[11px] text-emerald-500 mt-1">🌙</p>
+                      ) : (
+                        <div className="mt-1 space-y-1">
+                          {day.sessions.map((s) => (
+                            <div key={s.sessionId} draggable={!s.completed}
+                              onDragStart={() => setDraggedSession({ courseId: s.courseId, sessionId: s.sessionId, date: day.date })}
+                              className={`group relative text-[10px] leading-tight p-1 rounded border ${colorFor(s.interval)} ${s.completed ? 'opacity-50' : 'cursor-move'}`}>
+                              <div className="font-semibold truncate flex items-center gap-0.5">
+                                {s.completed && (s.success ? <Check className="w-2.5 h-2.5" /> : <X className="w-2.5 h-2.5" />)}
+                                {s.course}
+                              </div>
+                              <div className="flex justify-between"><span className="opacity-70">{s.interval}</span><span>{s.hours}h</span></div>
+                              {!s.completed && (
+                                <div className="absolute -top-1.5 right-0 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity z-10">
+                                  <button title={t('session.moveLeft')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, -1)} className="w-4 h-4 rounded bg-slate-600 text-white flex items-center justify-center"><ChevronLeft className="w-2.5 h-2.5" /></button>
+                                  <button title={t('session.moveRight')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, 1)} className="w-4 h-4 rounded bg-slate-600 text-white flex items-center justify-center"><ChevronRight className="w-2.5 h-2.5" /></button>
+                                  <button title={t('session.markPass')} onClick={() => markSession(s.courseId, s.sessionId, true)} className="w-4 h-4 rounded bg-emerald-500 text-white flex items-center justify-center"><Check className="w-2.5 h-2.5" /></button>
+                                  <button title={t('session.markFail')} onClick={() => markSession(s.courseId, s.sessionId, false)} className="w-4 h-4 rounded bg-amber-500 text-white flex items-center justify-center"><RefreshCw className="w-2.5 h-2.5" /></button>
+                                  <button title={t('session.delete')} onClick={() => { if (confirm(t('session.confirmDelete', { interval: s.interval, course: s.course }))) deleteSession(s.courseId, s.sessionId); }} className="w-4 h-4 rounded bg-rose-500 text-white flex items-center justify-center"><X className="w-2.5 h-2.5" /></button>
+                                </div>
+                              )}
                             </div>
                           ))}
                         </div>
-                        {isSunday ? (
-                          <p className="text-xs text-emerald-600 italic">🌙 {t('planning.restAuto')}</p>
-                        ) : day.sessions.length === 0 ? (
-                          <p className="text-xs text-slate-300 dark:text-slate-600 italic">{t('planning.rest')}</p>
-                        ) : (
-                          <div className="space-y-1.5">
-                            {day.sessions.map((s) => (
-                              <div key={s.sessionId} draggable={!s.completed}
-                                onDragStart={() => setDraggedSession({ courseId: s.courseId, sessionId: s.sessionId })}
-                                className={`group relative text-xs p-2 rounded-lg border ${colorFor(s.interval)} ${s.completed ? 'opacity-50' : 'cursor-move'}`}>
-                                <div className="font-semibold truncate flex items-center gap-1">
-                                  {s.completed && (s.success ? <Check className="w-3 h-3 text-emerald-600" /> : <X className="w-3 h-3 text-rose-600" />)}
-                                  {s.course}
-                                </div>
-                                <div className="flex justify-between items-center mt-0.5">
-                                  <span className="opacity-80">{s.interval}</span><span className="font-medium">{s.hours}h</span>
-                                </div>
-                                <div className="text-[10px] font-mono mt-0.5 opacity-70">⏰ {s.startTime}–{s.endTime}</div>
-                                {s.rescheduled && <div className="text-[10px] text-orange-600 mt-0.5">↻ {t('planning.rescheduled')}</div>}
-                                {!s.completed && (
-                                  <>
-                                    <div className="absolute top-1 left-1 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-                                      <button title={t('session.moveLeft')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, -1)} className="w-5 h-5 rounded bg-slate-600/85 hover:bg-slate-700 text-white flex items-center justify-center"><ChevronLeft className="w-3 h-3" /></button>
-                                      <button title={t('session.moveRight')} onClick={() => moveByDays(s.courseId, s.sessionId, day.date, 1)} className="w-5 h-5 rounded bg-slate-600/85 hover:bg-slate-700 text-white flex items-center justify-center"><ChevronRight className="w-3 h-3" /></button>
-                                    </div>
-                                    <div className="absolute top-1 right-1 flex gap-0.5 opacity-0 group-hover:opacity-100 group-focus-within:opacity-100 transition-opacity">
-                                      <button title={t('session.markPass')} onClick={() => markSession(s.courseId, s.sessionId, true)} className="w-5 h-5 rounded bg-emerald-500 hover:bg-emerald-600 text-white flex items-center justify-center"><Check className="w-3 h-3" /></button>
-                                      <button title={t('session.markFail')} onClick={() => markSession(s.courseId, s.sessionId, false)} className="w-5 h-5 rounded bg-amber-500 hover:bg-amber-600 text-white flex items-center justify-center"><RefreshCw className="w-3 h-3" /></button>
-                                      <button title={t('session.delete')} onClick={() => { if (confirm(t('session.confirmDelete', { interval: s.interval, course: s.course }))) deleteSession(s.courseId, s.sessionId); }} className="w-5 h-5 rounded bg-rose-500 hover:bg-rose-600 text-white flex items-center justify-center"><X className="w-3 h-3" /></button>
-                                    </div>
-                                  </>
-                                )}
-                              </div>
-                            ))}
-                            <div className={`text-xs font-medium mt-1 ${overloaded ? 'text-rose-600' : 'text-slate-500 dark:text-slate-400'}`}>{t('planning.total')}: {day.totalHours}h</div>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-
-            {/* Assistant */}
-            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 flex flex-col">
-              <div className="p-4 border-b border-slate-100 dark:border-slate-800">
-                <h2 className="font-semibold flex items-center gap-2">💬 {t('assistant.title')}</h2>
-                <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">{t('assistant.subtitle')}</p>
-              </div>
-              <div className="h-80 overflow-y-auto p-4 space-y-3">
-                {chatMessages.map((m, i) => (
-                  <div key={i} className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}>
-                    <div className={`max-w-[85%] p-2.5 rounded-lg text-sm whitespace-pre-line ${m.type === 'user' ? 'bg-indigo-600 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-700 dark:text-slate-200'}`}>{m.content}</div>
-                  </div>
-                ))}
-              </div>
-              <div className="p-4 border-t border-slate-100 dark:border-slate-800">
-                <div className="flex gap-2 mb-3">
-                  <input value={inputMessage} onChange={(e) => setInputMessage(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-                    placeholder={t('assistant.placeholder')} className="flex-1 p-2 text-sm border border-slate-200 dark:border-slate-700 rounded-lg focus:outline-none focus:ring-2 focus:ring-indigo-500" />
-                  <button onClick={handleSend} className="px-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"><Plus className="w-4 h-4" /></button>
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <button onClick={() => setInputMessage(lang === 'fr' ? 'Ajouter Anatomie avec 2 heures par jour' : 'Add Anatomy with 2 hours per day')} className="text-xs p-2 bg-indigo-50 hover:bg-indigo-100 rounded-lg text-indigo-700">➕ {t('assistant.newCourse')}</button>
-                  <button onClick={() => setInputMessage(lang === 'fr' ? 'Planning de la semaine' : 'Week plan')} className="text-xs p-2 bg-violet-50 hover:bg-violet-100 rounded-lg text-violet-700">📅 {t('assistant.week')}</button>
-                  <button onClick={() => setInputMessage(lang === 'fr' ? 'Aide' : 'Help')} className="text-xs p-2 bg-emerald-50 hover:bg-emerald-100 rounded-lg text-emerald-700">❓ {t('assistant.help')}</button>
-                  <button onClick={() => setActiveTab('settings')} className="text-xs p-2 bg-slate-50 dark:bg-slate-700/50 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-lg text-slate-600 dark:text-slate-300">⚙️ {t('assistant.config')}</button>
-                </div>
+                      )}
+                    </div>
+                  );
+                }))}
               </div>
             </div>
           </div>
@@ -692,12 +690,15 @@ const MemoMed = () => {
         {/* COURSES TAB */}
         {activeTab === 'courses' && (
           <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
-            <h2 className="text-lg font-semibold mb-4">{t('courses.title')}</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-lg font-semibold">{t('courses.title')}</h2>
+              <button onClick={() => { setActiveTab('planning'); addBlankDraft(); }} className="flex items-center gap-1 text-sm px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700"><Plus className="w-4 h-4" /> {t('courses.add')}</button>
+            </div>
             {courses.length === 0 ? (
               <div className="text-center py-12">
                 <BookOpen className="w-12 h-12 text-slate-200 mx-auto mb-3" />
                 <p className="text-slate-500 dark:text-slate-400">{t('courses.empty')}</p>
-                <button onClick={() => setActiveTab('planning')} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">💬 {t('courses.emptyCta')}</button>
+                <button onClick={() => { setActiveTab('planning'); addBlankDraft(); }} className="mt-4 px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">➕ {t('courses.add')}</button>
               </div>
             ) : (
               <div className="space-y-4">
@@ -719,7 +720,7 @@ const MemoMed = () => {
                             <span className="w-8 text-center text-sm font-medium">{c.hoursPerDay}h</span>
                             <button onClick={() => updateCourseHours(c.id, 0.5)} className="w-6 h-6 rounded bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 flex items-center justify-center"><Plus className="w-3 h-3" /></button>
                           </div>
-                          <button onClick={() => { if (confirm(t('courses.confirmDelete', { name: c.name }))) deleteCourse(c.id); }} title={t('courses.delete')} className="w-8 h-8 rounded-lg bg-rose-50 hover:bg-rose-100 text-rose-600 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>
+                          <button onClick={() => { if (confirm(t('courses.confirmDelete', { name: c.name }))) deleteCourse(c.id); }} title={t('courses.delete')} className="w-8 h-8 rounded-lg bg-rose-50 dark:bg-rose-500/10 hover:bg-rose-100 dark:hover:bg-rose-500/20 text-rose-600 dark:text-rose-400 flex items-center justify-center"><Trash2 className="w-4 h-4" /></button>
                         </div>
                       </div>
                       <div className="mt-3 h-2 bg-slate-100 dark:bg-slate-700 rounded-full overflow-hidden"><div className="h-full bg-emerald-500 rounded-full transition-all" style={{ width: `${pct}%` }} /></div>
@@ -803,7 +804,7 @@ const MemoMed = () => {
                   {constraints.slice().sort((a, b) => a.date.getTime() - b.date.getTime()).map((c) => (
                     <div key={c.id} className="flex items-center justify-between p-2 bg-slate-50 dark:bg-slate-700/50 rounded-lg text-sm">
                       <span>⚠ {c.date.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}{c.endDate ? ` → ${c.endDate.toLocaleDateString(lang === 'fr' ? 'fr-FR' : 'en-US')}` : ''} · {c.allDay ? t('constraints.allDay') : `${c.startHour}h–${c.endHour}h`}{c.description ? ` · ${c.description}` : ''}</span>
-                      <button onClick={() => deleteConstraint(c.id)} className="text-rose-500 hover:text-rose-700"><Trash2 className="w-4 h-4" /></button>
+                      <button onClick={() => deleteConstraint(c.id)} className="text-rose-500 dark:text-rose-400 hover:text-rose-700"><Trash2 className="w-4 h-4" /></button>
                     </div>
                   ))}
                 </div>
@@ -814,7 +815,7 @@ const MemoMed = () => {
             <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6">
               <h2 className="font-semibold mb-4 flex items-center gap-2"><Mail className="w-4 h-4 text-indigo-600" /> {t('settings.email.title')}</h2>
               <input type="email" value={userEmail} onChange={(e) => { setUserEmail(e.target.value); setIsEmailValid(/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e.target.value)); }}
-                placeholder={t('settings.email.label')} className={`w-full p-2.5 border rounded-lg mb-3 ${isEmailValid ? 'border-emerald-300 bg-emerald-50' : userEmail ? 'border-rose-300 bg-rose-50' : 'border-slate-200 dark:border-slate-700'}`} />
+                placeholder={t('settings.email.label')} className={`w-full p-2.5 border rounded-lg mb-3 ${isEmailValid ? 'border-emerald-300 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-500/10' : userEmail ? 'border-rose-300 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-500/10' : 'border-slate-200 dark:border-slate-700'}`} />
               <button onClick={sendInvitations} disabled={!isEmailValid || !courses.length || isEmailSending} className="w-full py-2.5 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:bg-slate-300">{isEmailSending ? t('settings.email.sending') : t('settings.email.send')}</button>
             </div>
 
@@ -823,16 +824,20 @@ const MemoMed = () => {
               <h2 className="font-semibold mb-4 flex items-center gap-2"><Bell className="w-4 h-4 text-indigo-600" /> {t('settings.notif.title')}</h2>
               {notificationPermission === 'granted' ? (
                 <div className="flex items-center gap-2">
-                  <span className="text-emerald-600 text-sm">✓ {t('settings.notif.enabled')}</span>
+                  <span className="text-emerald-600 dark:text-emerald-400 text-sm">✓ {t('settings.notif.enabled')}</span>
                   <button onClick={testNotification} className="ml-auto px-3 py-1.5 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 dark:hover:bg-slate-600 rounded-lg text-sm">{t('settings.notif.test')}</button>
                 </div>
               ) : (
-                <button onClick={initNotifications} className="px-4 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 rounded-lg text-sm">{t('settings.notif.enable')}</button>
+                <button onClick={initNotifications} className="px-4 py-2 bg-indigo-50 dark:bg-indigo-500/10 hover:bg-indigo-100 dark:hover:bg-indigo-500/20 text-indigo-700 dark:text-indigo-300 rounded-lg text-sm">{t('settings.notif.enable')}</button>
               )}
             </div>
           </div>
         )}
       </div>
+
+      {toast && (
+        <div className="fixed bottom-4 right-4 z-50 max-w-sm bg-slate-900 dark:bg-slate-700 text-white text-sm px-4 py-2.5 rounded-lg shadow-lg whitespace-pre-line">{toast}</div>
+      )}
     </div>
   );
 };

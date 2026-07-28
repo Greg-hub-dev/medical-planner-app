@@ -108,6 +108,18 @@ const fr: Dict = {
   'data.importError': '❌ Fichier invalide.',
   'session.moveLeft': "Reculer d'un jour", 'session.moveRight': "Avancer d'un jour",
 
+  'draft.title': 'Nouveaux cours — vérifiez puis créez',
+  'draft.name': 'Nom du cours',
+  'draft.create': 'Créer', 'draft.createAll': 'Tout créer', 'draft.discard': 'Ignorer',
+  'draft.start': 'Départ',
+  'courses.add': 'Ajouter un cours',
+  'create.title': 'Créer des cours',
+  'create.hint': 'Ajoutez un ou plusieurs cours ; les sessions J sont générées automatiquement.',
+  'create.empty': 'Aucun cours en préparation. Cliquez sur « Ajouter un cours ».',
+  'assistant.addPreview': "{n} cours préparé(s). Vérifiez le nom et les heures, puis créez.",
+  'assistant.created': '✅ Cours « {name} » créé.',
+  'assistant.createdN': '✅ {n} cours créés.',
+
   'days.0': 'Lundi', 'days.1': 'Mardi', 'days.2': 'Mercredi', 'days.3': 'Jeudi',
   'days.4': 'Vendredi', 'days.5': 'Samedi', 'days.6': 'Dimanche',
 };
@@ -212,6 +224,18 @@ const en: Dict = {
   'data.imported': '✅ Backup imported: {courses} courses, {constraints} constraints.',
   'data.importError': '❌ Invalid file.',
   'session.moveLeft': 'Move one day earlier', 'session.moveRight': 'Move one day later',
+
+  'draft.title': 'New courses — review, then create',
+  'draft.name': 'Course name',
+  'draft.create': 'Create', 'draft.createAll': 'Create all', 'draft.discard': 'Discard',
+  'draft.start': 'Start',
+  'courses.add': 'Add a course',
+  'create.title': 'Create courses',
+  'create.hint': 'Add one or more courses; the J-sessions are generated automatically.',
+  'create.empty': 'No course in progress. Click "Add a course".',
+  'assistant.addPreview': "{n} course(s) prepared. Check the name and hours, then create.",
+  'assistant.created': '✅ Course “{name}” created.',
+  'assistant.createdN': '✅ {n} courses created.',
 
   'days.0': 'Monday', 'days.1': 'Tuesday', 'days.2': 'Wednesday', 'days.3': 'Thursday',
   'days.4': 'Friday', 'days.5': 'Saturday', 'days.6': 'Sunday',
