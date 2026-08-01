@@ -414,26 +414,81 @@ const MemoMed = () => {
   };
 
   const importData = (file: File) => {
+    // Coercition des types Mongo « extended JSON » ($oid, $date).
+    type Any = Record<string, unknown>;
+    const coerceId = (v: unknown): string | null =>
+      v == null ? null : (typeof v === 'object' && (v as Any).$oid ? String((v as Any).$oid) : String(v));
+    const coerceDate = (v: unknown): string | null => {
+      if (v == null) return null;
+      if (typeof v === 'string' || typeof v === 'number') return String(v);
+      const dd = (v as Any).$date;
+      if (dd != null) return typeof dd === 'string' ? dd : new Date(dd as number).toISOString();
+      return null;
+    };
+    const normCourse = (c: Any) => ({
+      id: coerceId(c.id) ?? coerceId(c._id) ?? newId(),
+      name: (c.name as string) ?? 'Cours',
+      hoursPerDay: Number(c.hoursPerDay ?? c.hours ?? 1) || 1,
+      createdAt: new Date(coerceDate(c.createdAt) ?? Date.now()),
+      sessions: (((c.sessions as Any[]) || []).map((s) => ({
+        id: coerceId(s.id) ?? coerceId(s._id) ?? newId(),
+        interval: (s.interval as string) ?? 'J0',
+        date: new Date(coerceDate(s.date) ?? Date.now()),
+        originalDate: new Date(coerceDate(s.originalDate) ?? coerceDate(s.date) ?? Date.now()),
+        completed: Boolean(s.completed),
+        success: s.success === true ? true : s.success === false ? false : null,
+        rescheduled: Boolean(s.rescheduled),
+      }))),
+    });
+    const normConstraint = (k: Any) => ({
+      id: coerceId(k.id) ?? coerceId(k._id) ?? newId(),
+      date: new Date(coerceDate(k.date) ?? Date.now()),
+      endDate: k.endDate ? new Date(coerceDate(k.endDate) as string) : null,
+      allDay: k.allDay !== false,
+      startHour: Number(k.startHour ?? 0),
+      endHour: Number(k.endHour ?? 24),
+      description: (k.description as string) ?? '',
+    });
+
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const d = JSON.parse(String(reader.result));
-        if (!Array.isArray(d.courses)) throw new Error();
-        setCourses((d.courses as Record<string, unknown>[]).map((c) => ({
-          id: (c.id as string) ?? newId(), name: c.name as string, hoursPerDay: c.hoursPerDay as number,
-          createdAt: new Date(c.createdAt as string),
-          sessions: ((c.sessions as Record<string, unknown>[]) || []).map((s) => ({
-            id: (s.id as string) ?? newId(), interval: s.interval as string,
-            date: new Date(s.date as string), originalDate: new Date((s.originalDate as string) ?? (s.date as string)),
-            completed: Boolean(s.completed), success: (s.success as boolean | null) ?? null, rescheduled: Boolean(s.rescheduled),
-          })),
-        })));
-        setConstraints(((d.constraints as Record<string, unknown>[]) || []).map((c) => ({
-          id: (c.id as string) ?? newId(), date: new Date(c.date as string), endDate: c.endDate ? new Date(c.endDate as string) : null,
-          allDay: c.allDay !== false, startHour: (c.startHour as number) ?? 0, endHour: (c.endHour as number) ?? 24, description: (c.description as string) ?? '',
-        })));
-        say(t('data.imported', { courses: (d.courses || []).length, constraints: (d.constraints || []).length }));
-      } catch { say(t('data.importError')); }
+        const text = String(reader.result).trim();
+        // JSON standard, ou NDJSON (un document par ligne — export `mongoexport`).
+        let d: unknown;
+        try {
+          d = JSON.parse(text);
+        } catch {
+          d = text.split(/\r?\n/).filter((l) => l.trim()).map((l) => JSON.parse(l));
+        }
+
+        // Détermination de la forme : app-export {courses,constraints},
+        // ancien /api/export {data:{...}}, ou tableau brut (courses.json).
+        // On ne remplace que les collections réellement présentes dans le fichier
+        // (importer un seul courses.json n'efface pas les contraintes, et inversement).
+        let rawCourses: Any[] | null = null;
+        let rawConstraints: Any[] | null = null;
+        const obj = d as Any;
+        if (Array.isArray(d)) {
+          const looksCourse = d.length > 0 && ((d[0] as Any).sessions !== undefined || (d[0] as Any).hoursPerDay !== undefined || (d[0] as Any).hours !== undefined || (d[0] as Any).name !== undefined);
+          if (looksCourse) rawCourses = d as Any[]; else rawConstraints = d as Any[];
+        } else if (Array.isArray(obj.courses)) {
+          rawCourses = obj.courses as Any[];
+          if (obj.constraints !== undefined) rawConstraints = (obj.constraints as Any[]) || [];
+        } else if (obj.data && Array.isArray((obj.data as Any).courses)) {
+          rawCourses = (obj.data as Any).courses as Any[];
+          const dc = (obj.data as Any).constraints;
+          if (dc !== undefined) rawConstraints = (dc as Any[]) || [];
+        } else {
+          throw new Error('unrecognized shape');
+        }
+
+        if (rawCourses) setCourses(rawCourses.map(normCourse));
+        if (rawConstraints) setConstraints(rawConstraints.map(normConstraint));
+        say(t('data.imported', { courses: rawCourses?.length ?? 0, constraints: rawConstraints?.length ?? 0 }));
+      } catch {
+        say(t('data.importError'));
+      }
     };
     reader.readAsText(file);
   };
