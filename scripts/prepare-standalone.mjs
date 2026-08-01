@@ -28,4 +28,12 @@ if (fs.existsSync(publicDir)) {
   fs.cpSync(publicDir, path.join(standalone, 'public'), { recursive: true });
 }
 
+// Module natif better-sqlite3 : on copie la version courante de node_modules dans
+// le standalone (elle doit être compilée pour l'ABI Electron — voir `rebuild:electron`).
+const bs = path.join(root, 'node_modules', 'better-sqlite3');
+if (fs.existsSync(bs)) {
+  fs.cpSync(bs, path.join(standalone, 'node_modules', 'better-sqlite3'), { recursive: true });
+  console.log('✅ better-sqlite3 (binaire natif) copié dans le standalone.');
+}
+
 console.log('✅ Standalone préparé pour Electron.');

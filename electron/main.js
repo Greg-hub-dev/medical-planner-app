@@ -69,10 +69,30 @@ function loadUserConfig() {
   }
 }
 
+// Migration unique : récupère les données de l'ancien dossier « Medical Planner »
+// vers le nouveau dossier « MémoMed » (fichiers JSON repris ensuite par SQLite).
+function migrateLegacyData(userData) {
+  try {
+    const legacy = path.join(path.dirname(userData), 'Medical Planner');
+    if (legacy === userData || !fs.existsSync(legacy)) return;
+    if (fs.existsSync(path.join(userData, 'memomed.db')) || fs.existsSync(path.join(userData, 'courses.json'))) return;
+    fs.mkdirSync(userData, { recursive: true });
+    for (const f of ['courses.json', 'constraints.json', 'config.json']) {
+      const src = path.join(legacy, f);
+      const dst = path.join(userData, f);
+      if (fs.existsSync(src) && !fs.existsSync(dst)) fs.copyFileSync(src, dst);
+    }
+  } catch (err) {
+    console.error('Migration héritée impossible:', err);
+  }
+}
+
 async function startServer() {
   const port = await getFreePort();
   const standaloneDir = path.join(process.resourcesPath, 'standalone');
   const serverJs = path.join(standaloneDir, 'server.js');
+  const dataDir = app.getPath('userData');
+  migrateLegacyData(dataDir);
 
   const env = {
     ...process.env,
@@ -80,7 +100,7 @@ async function startServer() {
     NODE_ENV: 'production',
     PORT: String(port),
     HOSTNAME: '127.0.0.1',
-    MEDICAL_DATA_DIR: app.getPath('userData'),
+    MEMOMED_DATA_DIR: dataDir,
     // Permet au binaire Electron de se comporter comme Node pour lancer le serveur.
     ELECTRON_RUN_AS_NODE: '1',
   };
@@ -103,7 +123,7 @@ async function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1400,
     height: 900,
-    title: 'Medical Planner',
+    title: 'MémoMed',
     backgroundColor: '#f9fafb',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
