@@ -17,11 +17,13 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            artifact: medical-planner-windows-exe
+          # windows-2022 embarque Visual Studio 2022, que le node-gyp d'@electron/rebuild
+          # sait détecter. windows-latest a basculé sur VS 18 (2026), non reconnu → échec.
+          - os: windows-2022
+            artifact: memomed-windows-exe
             pattern: dist/*.exe
           - os: macos-latest
-            artifact: medical-planner-macos-dmg
+            artifact: memomed-macos-dmg
             pattern: dist/*.dmg
     runs-on: ${{ matrix.os }}
     steps:
@@ -33,6 +35,13 @@ jobs:
         with:
           node-version: 20
           cache: npm
+
+      # node-gyp (compilation de better-sqlite3 pour l'ABI Electron) a besoin de Python.
+      - name: Setup Python
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
 
       - name: Install dependencies
         run: npm ci
