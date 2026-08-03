@@ -3,7 +3,8 @@ name: Build installers
 # Construit les installeurs de bureau :
 #   - .exe (NSIS) sur un runner Windows
 #   - .dmg sur un runner macOS
-# Les fichiers sont disponibles en téléchargement dans l'onglet "Artifacts" du run.
+# Les fichiers sont téléchargeables dans l'onglet "Artifacts" du run, et — quand on
+# pousse un tag v… (ex. v0.1.0) — attachés à une Release GitHub (liens permanents).
 
 on:
   push:
@@ -59,3 +60,25 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ${{ matrix.pattern }}
           if-no-files-found: error
+
+  # Sur un tag v… : récupère les installeurs et les publie dans une Release GitHub.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/**/*.exe
+            artifacts/**/*.dmg
+          generate_release_notes: true
+          fail_on_unmatched_files: true
