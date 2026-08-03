@@ -10,7 +10,7 @@ import {
 import { t as translate, dayLabels, APP_NAME, type Lang } from '../../lib/i18n';
 import {
   generateSessions, markSession as engineMark, rescheduleOverdue, countOverdue,
-  colorFor, newId, type EngineSession,
+  colorFor, newId, daysToScheme, normalizeDays, DEFAULT_DAYS, PRESETS, type EngineSession,
 } from '../../lib/spacedRepetition';
 
 // ---- Types ----------------------------------------------------------------
@@ -109,6 +109,12 @@ const MemoMed = () => {
 
   const [draggedSession, setDraggedSession] = useState<{ courseId: string; sessionId: string; date: Date } | null>(null);
   const [drafts, setDrafts] = useState<Draft[]>([]);
+  const [scheme, setScheme] = useState<number[]>(() => {
+    if (typeof window === 'undefined') return DEFAULT_DAYS;
+    try { const s = localStorage.getItem('memomed_scheme'); const a = s ? JSON.parse(s) : null; return Array.isArray(a) && a.length ? normalizeDays(a) : DEFAULT_DAYS; } catch { return DEFAULT_DAYS; }
+  });
+  const [schemeDraft, setSchemeDraft] = useState<number[]>(scheme);
+  const [pendingScheme, setPendingScheme] = useState<number[] | null>(null);
 
   const availableHours = Math.max(1, timePrefs.preferredEndHour - timePrefs.preferredStartHour - 1);
   // Notification transitoire (remplace l'ancien fil de discussion de l'assistant).
@@ -222,6 +228,7 @@ const MemoMed = () => {
   }, [theme]);
   useEffect(() => { localStorage.setItem('memomed_move_linked', moveLinked ? '1' : '0'); }, [moveLinked]);
   useEffect(() => { localStorage.setItem('memomed_view', viewMode); }, [viewMode]);
+  useEffect(() => { localStorage.setItem('memomed_scheme', JSON.stringify(scheme)); }, [scheme]);
 
   // Ctrl+Z / Cmd+Z pour annuler la dernière action (sauf dans un champ de saisie).
   useEffect(() => {
@@ -287,9 +294,45 @@ const MemoMed = () => {
 
   // ---- Course / session operations ---------------------------------------
   const addCourse = (name: string, hours: number, startDate: Date | null) => {
-    const sessions = generateSessions(startDate || new Date()) as Session[];
+    const sessions = generateSessions(startDate || new Date(), daysToScheme(scheme)) as Session[];
     setCourses((p) => [...p, { id: newId(), name, hoursPerDay: hours, createdAt: new Date(), sessions }]);
   };
+
+  // ---- Revision method (scheme) ------------------------------------------
+  // Régénère les sessions d'un cours avec une nouvelle échelle ; la progression
+  // (sessions terminées) est conservée par clé d'intervalle quand elle existe encore.
+  const regenerateCourse = (c: Course, days: number[]): Course => {
+    const anchor = c.sessions.length
+      ? new Date(Math.min(...c.sessions.map((s) => s.originalDate.getTime())))
+      : new Date(c.createdAt);
+    const doneKeys = new Set<string>();
+    const successByKey: Record<string, boolean | null> = {};
+    c.sessions.forEach((s) => { if (s.completed) { doneKeys.add(s.interval); successByKey[s.interval] = s.success; } });
+    const fresh = generateSessions(anchor, daysToScheme(days)) as Session[];
+    const sessions = fresh.map((s) => doneKeys.has(s.interval) ? { ...s, completed: true, success: successByKey[s.interval] } : s);
+    return { ...c, sessions };
+  };
+  const applySchemeNew = (days: number[]) => { setScheme(days); setSchemeDraft(days); setPendingScheme(null); say(t('method.saved')); };
+  const applySchemeExisting = (days: number[]) => {
+    snapshot();
+    setScheme(days); setSchemeDraft(days); setPendingScheme(null);
+    setCourses((p) => p.map((c) => regenerateCourse(c, days)));
+    say(t('method.applied', { n: courses.length }));
+  };
+  const saveScheme = () => {
+    const norm = normalizeDays(schemeDraft);
+    if (JSON.stringify(norm) === JSON.stringify(normalizeDays(scheme))) { say(t('method.nochange')); return; }
+    if (courses.length === 0) applySchemeNew(norm); else setPendingScheme(norm);
+  };
+  const updateDraftDay = (i: number, v: number) => setSchemeDraft((p) => p.map((x, idx) => idx === i ? Math.max(1, Math.round(v) || 1) : x));
+  const removeDraftDay = (i: number) => setSchemeDraft((p) => p.filter((_, idx) => idx !== i));
+  const addDraftDay = () => setSchemeDraft((p) => [...p, (p[p.length - 1] || 0) + 5]);
+  const selectPreset = (id: string) => { const pr = PRESETS.find((x) => x.id === id); if (pr) setSchemeDraft(normalizeDays(pr.days)); };
+  const currentPresetId = (() => {
+    const key = JSON.stringify(normalizeDays(schemeDraft));
+    const found = PRESETS.find((p) => JSON.stringify(normalizeDays(p.days)) === key);
+    return found ? found.id : 'custom';
+  })();
 
   // ---- Course drafts (preview / edit / confirm) ---------------------------
   const addBlankDraft = () => setDrafts((p) => [...p, { tempId: newId(), name: '', hours: 1, startDate: '' }]);
@@ -911,6 +954,45 @@ const MemoMed = () => {
                   <span className="block text-xs text-slate-400 dark:text-slate-500 mt-0.5">{t('settings.move.hint')}</span>
                 </span>
               </label>
+            </div>
+
+            {/* Revision method (scheme) */}
+            <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700 p-6 lg:col-span-2">
+              <h2 className="font-semibold mb-1 flex items-center gap-2"><RotateCcw className="w-4 h-4 text-indigo-600" /> {t('method.title')}</h2>
+              <p className="text-xs text-slate-500 dark:text-slate-400 mb-4">{t('method.hint')}</p>
+              <div className="flex flex-wrap items-end gap-4">
+                <label className="text-sm">{t('method.preset')}
+                  <select value={currentPresetId} onChange={(e) => selectPreset(e.target.value)} className="mt-1 block p-2 border border-slate-200 dark:border-slate-700 rounded-lg bg-white dark:bg-slate-900 text-sm">
+                    {PRESETS.map((p) => <option key={p.id} value={p.id}>{t(`method.${p.id}`)}</option>)}
+                    <option value="custom">{t('method.custom')}</option>
+                  </select>
+                </label>
+                <div className="text-sm">
+                  <span className="block mb-1 text-slate-500 dark:text-slate-400">{t('method.intervals')}</span>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {schemeDraft.map((d, i) => i === 0 ? (
+                      <span key="j0" className="px-2 py-1 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-500/15 dark:text-blue-300">J0</span>
+                    ) : (
+                      <span key={i} className="flex items-center gap-0.5 pl-1.5 pr-1 py-1 rounded-lg border border-slate-200 dark:border-slate-600 bg-slate-50 dark:bg-slate-700/50 text-xs">
+                        J+
+                        <input type="number" min={1} value={d} onChange={(e) => updateDraftDay(i, +e.target.value)} className="w-12 p-0.5 text-center border border-slate-200 dark:border-slate-600 rounded bg-white dark:bg-slate-800" />
+                        <button onClick={() => removeDraftDay(i)} className="text-rose-500 hover:text-rose-700 ml-0.5" title={t('draft.discard')}><X className="w-3 h-3" /></button>
+                      </span>
+                    ))}
+                    <button onClick={addDraftDay} className="flex items-center gap-1 px-2 py-1 rounded-lg border border-dashed border-slate-300 dark:border-slate-600 text-xs text-slate-500 dark:text-slate-400 hover:bg-slate-50 dark:hover:bg-slate-700"><Plus className="w-3 h-3" /> {t('method.addInterval')}</button>
+                  </div>
+                </div>
+                <button onClick={saveScheme} className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700">{t('method.save')}</button>
+              </div>
+              {pendingScheme && (
+                <div className="mt-4 p-3 rounded-lg bg-amber-50 dark:bg-amber-500/10 border border-amber-200 dark:border-amber-500/30 text-sm">
+                  <p className="mb-2 text-amber-800 dark:text-amber-300">{t('method.applyQ')}</p>
+                  <div className="flex flex-wrap gap-2">
+                    <button onClick={() => applySchemeNew(pendingScheme)} className="px-3 py-1.5 rounded-lg bg-white dark:bg-slate-700 border border-slate-200 dark:border-slate-600 text-slate-700 dark:text-slate-200 hover:bg-slate-50 dark:hover:bg-slate-600">{t('method.applyNew')}</button>
+                    <button onClick={() => applySchemeExisting(pendingScheme)} className="px-3 py-1.5 rounded-lg bg-indigo-600 text-white hover:bg-indigo-700">{t('method.applyExisting')} ({courses.length})</button>
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Data & backup */}

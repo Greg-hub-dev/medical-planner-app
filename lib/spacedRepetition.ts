@@ -16,7 +16,9 @@ export interface EngineSession {
   rescheduled: boolean;
 }
 
-// Échelle par défaut. Modifiable ultérieurement (par cours ou globalement).
+// Échelle par défaut (méthode des J), exprimée en jours.
+export const DEFAULT_DAYS = [0, 1, 2, 10, 25, 47];
+
 export const DEFAULT_SCHEME: SchemeStep[] = [
   { key: 'J0', days: 0 },
   { key: 'J+1', days: 1 },
@@ -25,6 +27,31 @@ export const DEFAULT_SCHEME: SchemeStep[] = [
   { key: 'J+25', days: 25 },
   { key: 'J+47', days: 47 },
 ];
+
+// Modèles de répétition espacée proposés dans les Réglages (jours). Les libellés
+// sont traduits côté UI via les clés `method.<id>`.
+export interface Preset {
+  id: string;
+  days: number[];
+}
+export const PRESETS: Preset[] = [
+  { id: 'j', days: [0, 1, 2, 10, 25, 47] }, // Méthode des J (défaut)
+  { id: 'leitner', days: [0, 1, 3, 7, 15, 30, 90] }, // Classique / Leitner
+  { id: 'doubling', days: [0, 1, 2, 4, 8, 16, 32] }, // Intervalles doublants
+  { id: 'intensive', days: [0, 1, 3, 7, 14] }, // Intensif (examen proche)
+  { id: 'anki', days: [0, 1, 3, 7, 16, 35] }, // Type Anki (SM-2)
+];
+
+/** Normalise une liste de jours (positifs, uniques, triés, avec J0). */
+export function normalizeDays(days: number[]): number[] {
+  const norm = Array.from(new Set(days.map((n) => Math.max(0, Math.round(n))))).sort((a, b) => a - b);
+  return norm[0] === 0 ? norm : [0, ...norm];
+}
+
+/** Construit une échelle (SchemeStep[]) à partir d'une liste de jours. */
+export function daysToScheme(days: number[]): SchemeStep[] {
+  return normalizeDays(days).map((d) => ({ key: d === 0 ? 'J0' : `J+${d}`, days: d }));
+}
 
 const COLORS: Record<string, string> = {
   'J0': 'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/25',
@@ -36,8 +63,24 @@ const COLORS: Record<string, string> = {
   'Reprise': 'bg-red-100 text-red-700 border-red-300 dark:bg-red-500/20 dark:text-red-300 dark:border-red-500/30',
 };
 
+// Palette de secours pour les intervalles personnalisés (hors modèle par défaut).
+const PALETTE: string[] = [
+  'bg-blue-100 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/25',
+  'bg-rose-100 text-rose-700 border-rose-200 dark:bg-rose-500/15 dark:text-rose-300 dark:border-rose-500/25',
+  'bg-orange-100 text-orange-700 border-orange-200 dark:bg-orange-500/15 dark:text-orange-300 dark:border-orange-500/25',
+  'bg-amber-100 text-amber-800 border-amber-200 dark:bg-amber-500/15 dark:text-amber-300 dark:border-amber-500/25',
+  'bg-emerald-100 text-emerald-700 border-emerald-200 dark:bg-emerald-500/15 dark:text-emerald-300 dark:border-emerald-500/25',
+  'bg-violet-100 text-violet-700 border-violet-200 dark:bg-violet-500/15 dark:text-violet-300 dark:border-violet-500/25',
+  'bg-cyan-100 text-cyan-700 border-cyan-200 dark:bg-cyan-500/15 dark:text-cyan-300 dark:border-cyan-500/25',
+  'bg-fuchsia-100 text-fuchsia-700 border-fuchsia-200 dark:bg-fuchsia-500/15 dark:text-fuchsia-300 dark:border-fuchsia-500/25',
+];
+
 export function colorFor(interval: string): string {
-  return COLORS[interval] || 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
+  if (COLORS[interval]) return COLORS[interval];
+  if (interval === 'J0') return PALETTE[0];
+  const m = /^J\+(\d+)$/.exec(interval);
+  if (m) return PALETTE[Number(m[1]) % PALETTE.length];
+  return 'bg-slate-100 text-slate-700 border-slate-200 dark:bg-slate-700 dark:text-slate-300 dark:border-slate-600';
 }
 
 function skipSunday(d: Date): Date {
