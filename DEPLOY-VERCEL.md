@@ -40,8 +40,17 @@ Aucune table à créer : les migrations s'exécutent automatiquement au premier 
 | `APP_PASSWORD` | un mot de passe de ton choix | 🔒 fortement recommandé |
 | `APP_USER` | un identifiant imposé | optionnel |
 | `EMAIL_USER` / `EMAIL_APP_PASSWORD` | compte Gmail | optionnel (invitations calendrier) |
+| `ELECTRON_SKIP_BINARY_DOWNLOAD` | `1` | ⚡ recommandé (voir ci-dessous) |
 
 4. **Deploy**. Ton URL : `https://<projet>.vercel.app`.
+
+### Accélérer l'installation
+
+Le projet dépend d'Electron pour générer les installeurs de bureau. Sur Vercel,
+`npm install` télécharge donc inutilement le binaire Electron (~263 Mo), ce qui
+ralentit le build et peut le faire échouer. Définis la variable
+`ELECTRON_SKIP_BINARY_DOWNLOAD=1` dans Vercel : le binaire n'est plus téléchargé,
+et cela **n'affecte pas** la génération des `.exe`/`.dmg` par GitHub Actions.
 
 ### Sécurité
 
