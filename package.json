@@ -17,6 +17,7 @@
     "dist:dir": "next build && npm run rebuild:electron && npm run prepare:standalone && electron-builder --dir"
   },
   "dependencies": {
+    "@libsql/client": "^0.17.4",
     "better-sqlite3": "^12.11.1",
     "lucide-react": "^0.542.0",
     "next": "15.5.2",
@@ -25,6 +26,7 @@
     "react-dom": "19.1.0"
   },
   "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
     "@eslint/eslintrc": "^3",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20.19.11",
@@ -35,7 +37,6 @@
     "cross-env": "^7.0.3",
     "electron": "^33.2.0",
     "electron-builder": "^25.1.8",
-    "@electron/rebuild": "^3.7.1",
     "eslint": "^9",
     "eslint-config-next": "15.5.2",
     "tailwindcss": "^4",

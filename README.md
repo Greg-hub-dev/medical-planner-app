@@ -69,6 +69,12 @@ Récupérez l'installeur correspondant à votre OS (dossier `dist/` après build
 
 Double-cliquez pour installer, puis lancez l'application.
 
+## 🌍 Version en ligne (optionnel)
+
+En plus de l'application de bureau, le même code peut être **déployé sur Vercel**
+(base hébergée Turso + protection par mot de passe) pour y accéder depuis un iPad,
+un téléphone ou un autre ordinateur. Voir **[DEPLOY-VERCEL.md](DEPLOY-VERCEL.md)**.
+
 ## 🛠️ Développement
 
 Prérequis : **Node.js 20+**.
@@ -130,7 +136,9 @@ Sans ces valeurs, toutes les autres fonctionnalités marchent ; seul l'envoi d'e
 
 - **UI** : Next.js 15, React 19, TailwindCSS 4, Lucide React
 - **Bureau** : Electron 33 + electron-builder
-- **Stockage** : SQLite local via **better-sqlite3** (`lib/db.js`), avec migrations versionnées
+- **Stockage** : deux backends interchangeables (`lib/db/`), même schéma et mêmes
+  migrations versionnées — **SQLite local** via better-sqlite3 (bureau) ou
+  **Turso/libSQL** (déploiement en ligne, voir [DEPLOY-VERCEL.md](DEPLOY-VERCEL.md))
 - **Logique** : `lib/spacedRepetition.ts` (méthode des J, adaptation, reprise) et
   `lib/i18n.ts` (traductions FR/EN)
 - **Email** : Nodemailer (Gmail)
