@@ -1,6 +1,6 @@
 {
   "name": "memomed",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "MémoMed — planificateur de révisions médicales par répétition espacée (méthode des J), 100% local.",
   "author": "Gregoire Puscian",
   "private": true,
