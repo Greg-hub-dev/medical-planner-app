@@ -70,7 +70,8 @@
     },
     "mac": {
       "target": "dmg",
-      "category": "public.app-category.medical"
+      "category": "public.app-category.medical",
+      "artifactName": "${productName}-${version}-${arch}.${ext}"
     },
     "linux": {
       "target": "AppImage",

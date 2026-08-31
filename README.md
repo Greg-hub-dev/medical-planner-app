@@ -65,7 +65,12 @@ de l'ancien dossier « Medical Planner ») sont **importés automatiquement** da
 Récupérez l'installeur correspondant à votre OS (dossier `dist/` après build) :
 
 - **Windows** : `MémoMed Setup x.y.z.exe`
-- **macOS** : `MémoMed-x.y.z.dmg`
+- **macOS (Intel)** : `MémoMed-x.y.z-x64.dmg`
+- **macOS (Apple Silicon M1/M2/M3)** : `MémoMed-x.y.z-arm64.dmg`
+
+> ⚠️ Sur Mac, prends bien le `.dmg` correspondant à ton processeur. Un `.dmg`
+> arm64 lancé sur un Mac Intel affiche « l'application n'est pas prise en charge
+> par ce Mac ». Pour connaître le tien : menu  → *À propos de ce Mac*.
 
 Double-cliquez pour installer, puis lancez l'application.
 

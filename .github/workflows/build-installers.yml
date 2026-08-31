@@ -23,8 +23,14 @@ jobs:
           - os: windows-2022
             artifact: memomed-windows-exe
             pattern: dist/*.exe
+          # Deux runners macOS natifs : macos-13 est Intel (x64), macos-latest est
+          # Apple Silicon (arm64). Construire sur chacun évite de cross-compiler le
+          # module natif better-sqlite3, et fournit un .dmg pour chaque type de Mac.
+          - os: macos-13
+            artifact: memomed-macos-dmg-intel
+            pattern: dist/*.dmg
           - os: macos-latest
-            artifact: memomed-macos-dmg
+            artifact: memomed-macos-dmg-apple-silicon
             pattern: dist/*.dmg
     runs-on: ${{ matrix.os }}
     steps:
